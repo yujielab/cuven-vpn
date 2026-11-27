@@ -23,7 +23,8 @@ final class VPNController: ObservableObject {
     @Published private(set) var requiresAppStart = false
     @Published private(set) var hasCredential = false
     @Published private(set) var status = NEVPNStatus.invalid
-    @Published private(set) var tunnelRTT: Int64?
+    @Published private var rtt = TunnelRTTMeasurement()
+    var tunnelRTT: Int64? { rtt.milliseconds }
     @Published private(set) var busy = false
     @Published private(set) var loaded = false
     @Published private(set) var error: String?
@@ -103,7 +104,7 @@ final class VPNController: ObservableObject {
         let previous = status
         let next = manager?.connection.status ?? .invalid
         status = next
-        if next != .connected { tunnelRTT = nil }
+        if next != .connected { rtt = TunnelRTTMeasurement() }
         switch next {
         case .connecting, .reasserting:
             pendingDisconnectReport = nil
@@ -142,12 +143,17 @@ final class VPNController: ObservableObject {
 
     func refreshTunnelRTT() {
         guard status == .connected, let session = manager?.connection as? NETunnelProviderSession else { return }
-        try? session.sendProviderMessage(TunnelConfiguration.rttRequest) { [weak self] data in
-            let sample = data.flatMap { Int64(String(decoding: $0, as: UTF8.self)) }
-            Task { @MainActor in
-                guard let self, self.status == .connected, self.manager?.connection === session else { return }
-                self.tunnelRTT = sample
+        let request = rtt.begin()
+        do {
+            try session.sendProviderMessage(TunnelConfiguration.rttRequest) { [weak self, weak session] data in
+                Task { @MainActor in
+                    guard let self, let session, self.status == .connected,
+                          self.manager?.connection === session else { return }
+                    self.rtt.finish(request, reply: data)
+                }
             }
+        } catch {
+            rtt.finish(request, reply: nil)
         }
     }
 
