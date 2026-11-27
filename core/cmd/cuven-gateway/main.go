@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -120,7 +121,7 @@ func openTUN(ctx context.Context, dual bool) (*os.File, error) {
 	if dual {
 		commands = append(commands, []string{"-6", "addr", "add", "fd66::1/126", "dev", name, "nodad"})
 	}
-	commands = append(commands, []string{"link", "set", "dev", name, "mtu", "1280", "up"})
+	commands = append(commands, []string{"link", "set", "dev", name, "mtu", strconv.Itoa(iptunnel.LegacyMTU), "up"})
 	for _, args := range commands {
 		if out, err := exec.CommandContext(ctx, "ip", args...).CombinedOutput(); err != nil {
 			_ = device.Close()
@@ -157,6 +158,8 @@ func serve(ctx context.Context, listener *iptunnel.Listener, device *os.File, to
 		}
 		_ = device.Close()
 	}()
+	// While a session owns the slot, only its goroutine can change the TUN MTU.
+	interfaceMTU := iptunnel.LegacyMTU
 	slot := make(chan struct{}, 1)
 	for {
 		connection, err := listener.Accept(ctx)
@@ -183,8 +186,15 @@ func serve(ctx context.Context, listener *iptunnel.Listener, device *os.File, to
 			if err != nil {
 				return
 			}
-			active.Store(peer)
 			defer peer.Close()
+			if mtu := peer.PacketMTU(); mtu != interfaceMTU {
+				if err := exec.CommandContext(ctx, "ip", "link", "set", "dev", "cuven0", "mtu", strconv.Itoa(mtu)).Run(); err != nil {
+					log.Print("could not set the negotiated tunnel MTU")
+					return
+				}
+				interfaceMTU = mtu
+			}
+			active.Store(peer)
 			defer active.CompareAndSwap(peer, nil)
 			if model != nil {
 				go monitorLink(peer, model)

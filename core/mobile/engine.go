@@ -83,6 +83,14 @@ func (e *Engine) RequireEncryptedDNS() error {
 	return nil
 }
 
+// PacketMTU returns the active session's inner IP limit, or zero before startup.
+func (e *Engine) PacketMTU() int64 {
+	if live := e.current(); live != nil {
+		return int64(live.mtu)
+	}
+	return 0
+}
+
 // RTTMilliseconds returns the measured smoothed tunnel RTT, or -1 without a sample.
 func (e *Engine) RTTMilliseconds() int64 {
 	live := e.current()
@@ -172,6 +180,9 @@ func (e *Engine) start(mtu int64, policy packetPolicy, open func(context.Context
 	if err != nil {
 		e.Stop()
 		return err
+	}
+	if tunnel, ok := stack.(*iptunnel.Session); ok {
+		mtu = int64(tunnel.PacketMTU())
 	}
 	live := &session{ctx: ctx, tunnel: stack, mtu: int(mtu), policy: policy}
 

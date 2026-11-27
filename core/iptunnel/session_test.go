@@ -91,6 +91,9 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 	if err := <-serverErrors; err != nil {
 		t.Fatal(err)
 	}
+	if client.PacketMTU() != 1500 || server.PacketMTU() != 1500 {
+		t.Fatalf("current client and gateway negotiated MTUs %d and %d", client.PacketMTU(), server.PacketMTU())
+	}
 	for _, test := range []struct {
 		from, to *Session
 		packet   []byte
@@ -105,6 +108,67 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 		if packet, err := test.to.ReadPacket(ctx); err != nil || !bytes.Equal(packet, test.packet) {
 			t.Fatalf("packet round trip: got %d of %d bytes, error %v", len(packet), len(test.packet), err)
 		}
+	}
+}
+
+// Older installed clients offer only the original ALPN. They must keep the
+// 1280-byte IP limit even when the gateway also supports larger packets.
+func TestLegacyClientKeepsOriginalMTU(t *testing.T) {
+	fixture := httptest.NewTLSServer(nil)
+	cert := fixture.TLS.Certificates[0]
+	roots := x509.NewCertPool()
+	roots.AddCert(fixture.Certificate())
+	fixture.Close()
+	listener, err := Listen("127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	token := Token{1}
+	type result struct {
+		peer *Session
+		err  error
+	}
+	accepted := make(chan result, 1)
+	go func() {
+		conn, err := listener.Accept(ctx)
+		if err != nil {
+			accepted <- result{err: err}
+			return
+		}
+		peer, err := Authenticate(ctx, conn, token, false)
+		accepted <- result{peer, err}
+	}()
+	conn, err := quic.DialAddr(ctx, listener.Addr().String(), &tls.Config{
+		RootCAs: roots, NextProtos: []string{"cuven-ip/1"}, CurvePreferences: []tls.CurveID{tls.X25519MLKEM768},
+	}, quicConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseWithError(0, "")
+	if _, err := authenticateClient(ctx, conn, token); err != nil {
+		t.Fatal(err)
+	}
+	res := <-accepted
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	defer res.peer.Close()
+	if res.peer.PacketMTU() != 1280 {
+		t.Fatalf("legacy gateway session MTU = %d", res.peer.PacketMTU())
+	}
+	if err := res.peer.WritePacket(testPacket4(1281)); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("oversize legacy packet: %v", err)
+	}
+	client := newSession(conn, false)
+	if err := res.peer.WritePacket(testPacket6(1280)); err != nil {
+		t.Fatal(err)
+	}
+	packet, err := client.ReadPacket(ctx)
+	if err != nil || !bytes.Equal(packet, testPacket6(1280)) {
+		t.Fatalf("legacy packet, length=%d error=%v", len(packet), err)
 	}
 }
 

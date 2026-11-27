@@ -42,7 +42,7 @@ func PacketAddresses(packet []byte) (src, dst netip.Addr, ok bool) {
 }
 
 func (s *Session) WritePacket(packet []byte) error {
-	if _, _, ok := PacketAddresses(packet); !ok {
+	if _, _, ok := PacketAddresses(packet); !ok || len(packet) > s.mtu {
 		return ErrInvalidPacket
 	}
 	var frame [fragmentHeader + fragmentSize]byte
@@ -127,7 +127,7 @@ func (s *Session) receive() {
 			return
 		}
 		packet := fragments.unpack(frame, time.Now())
-		if _, _, ok := PacketAddresses(packet); !ok {
+		if _, _, ok := PacketAddresses(packet); !ok || len(packet) > s.mtu {
 			continue
 		}
 		select {

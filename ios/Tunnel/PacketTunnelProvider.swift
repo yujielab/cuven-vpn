@@ -164,16 +164,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
                 // Reuse the address that worked, and alternate addresses if reconnect fails.
                 session.nextEndpoint -= 1
-                if session.routesInstalled {
+                let mtu = Int(engine.packetMTU())
+                guard mtu == TunnelConfiguration.legacyMTU || mtu == TunnelConfiguration.maximumMTU else {
+                    self.connectionFailed(session, failure: .settings)
+                    return
+                }
+                if session.installedMTU == mtu {
                     self.activate(session, engine: engine)
                 } else {
-                    self.installRoutes(session, engine: engine)
+                    self.installRoutes(session, engine: engine, mtu: mtu)
                 }
             }
         }
     }
 
-    private func installRoutes(_ session: Session, engine: MobileEngine) {
+    private func installRoutes(_ session: Session, engine: MobileEngine, mtu: Int) {
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         // Route both families so unsupported traffic cannot escape a single-stack tunnel.
         let plan = session.current.plan
@@ -204,16 +209,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         dns.matchDomains = [""]
         dns.matchDomainsNoSearch = true
         settings.dnsSettings = dns
-        settings.mtu = NSNumber(value: TunnelConfiguration.mtu)
+        settings.mtu = NSNumber(value: mtu)
         setTunnelNetworkSettings(settings) { error in
             self.state.async {
                 guard self.session === session, session.engine === engine else { return }
                 guard error == nil else {
-                    self.terminate(session, failure: .settings)
+                    if session.routesInstalled && session.retainsRoutesOnFailure {
+                        self.connectionFailed(session, failure: .settings)
+                    } else {
+                        self.terminate(session, failure: .settings)
+                    }
                     return
                 }
-                session.routesInstalled = true
-                self.startPathMonitor(session)
+                session.installedMTU = mtu
+                if session.monitor == nil { self.startPathMonitor(session) }
                 self.activate(session, engine: engine)
             }
         }
@@ -245,11 +254,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func writeToCore(_ packets: [Data], session: Session, engine: MobileEngine) {
+        guard let mtu = session.installedMTU else { return }
         for start in stride(from: 0, to: packets.count, by: PacketBatch.maxPackets) {
             let end = min(start + PacketBatch.maxPackets, packets.count)
             let batch = PacketBatch.encode(
                 packets[start..<end],
-                mtu: TunnelConfiguration.mtu,
+                mtu: mtu,
                 allowIPv4: session.current.plan.ipv4 != nil,
                 allowIPv6: session.current.plan.ipv6 != nil
             )
@@ -272,7 +282,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     self.connectionFailed(session)
                     return
                 }
-                if let decoded = PacketBatch.decode(batch, mtu: TunnelConfiguration.mtu) {
+                if let mtu = session.installedMTU, let decoded = PacketBatch.decode(batch, mtu: mtu) {
                     _ = self.packetFlow.writePackets(decoded.packets, withProtocols: decoded.protocols)
                 } else {
                     if session.retainsRoutesOnFailure {
@@ -404,7 +414,8 @@ private final class Session {
     var engine: MobileEngine?
     var endpoints: [String] = []
     var nextEndpoint = 0
-    var routesInstalled = false
+    var installedMTU: Int?
+    var routesInstalled: Bool { installedMTU != nil }
     var ready = false
     var connectedAt: DispatchTime?
     var reconnectAttempts = 0

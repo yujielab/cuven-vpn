@@ -74,10 +74,10 @@ final class VPNProfileTests: XCTestCase {
         let packets = [ipv4, ipv6]
         let plan = try TunnelNetworkPlan(profile: VPNProfile(host: "vpn.example", transport: .cuven))
         let batch = PacketBatch.encode(
-            packets[...], mtu: TunnelConfiguration.mtu,
+            packets[...], mtu: TunnelConfiguration.legacyMTU,
             allowIPv4: plan.ipv4 != nil, allowIPv6: plan.ipv6 != nil
         )
-        XCTAssertEqual(PacketBatch.decode(batch, mtu: TunnelConfiguration.mtu)?.packets, [ipv4])
+        XCTAssertEqual(PacketBatch.decode(batch, mtu: TunnelConfiguration.legacyMTU)?.packets, [ipv4])
         guard case .https = plan.dnsMode else { return XCTFail("Cuven must use encrypted DNS by default") }
     }
 

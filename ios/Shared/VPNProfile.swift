@@ -11,7 +11,8 @@ enum TunnelConfiguration {
     static let automaticFallbackKey = "AutomaticFallback"
     static let alternateProfileKey = "AlternateProfile"
     static let alternateCredentialKey = "AlternateCredential"
-    static let mtu = 1280
+    static let legacyMTU = 1280
+    static let maximumMTU = 1500
     static let rttRequest = Data("cuven.rtt-ms".utf8)
 
     static var keychainAccessGroup: String {

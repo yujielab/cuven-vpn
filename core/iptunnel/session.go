@@ -19,8 +19,10 @@ import (
 )
 
 const (
-	ALPN          = "cuven-ip/1"
-	MTU           = 1280
+	ALPN          = "cuven-ip/2"
+	legacyALPN    = "cuven-ip/1"
+	MTU           = 1500
+	LegacyMTU     = 1280
 	tokenSize     = 32
 	authTimeout   = 8 * time.Second
 	closeNormal   = 0
@@ -60,6 +62,7 @@ type Session struct {
 	packets    chan []byte
 	sequence   atomic.Uint32
 	ipv6       bool
+	mtu        int
 }
 
 func quicConfig() *quic.Config {
@@ -78,7 +81,7 @@ func Dial(ctx context.Context, address string, token Token, tlsConfig *tls.Confi
 		return nil, ErrAuthentication
 	}
 	config := tlsConfig.Clone()
-	config.NextProtos = []string{ALPN}
+	config.NextProtos = []string{ALPN, legacyALPN}
 	config.MinVersion = tls.VersionTLS13
 	config.MaxVersion = tls.VersionTLS13
 	config.CurvePreferences = []tls.CurveID{tls.X25519MLKEM768}
@@ -127,7 +130,7 @@ func Listen(address string, tlsConfig *tls.Config) (*Listener, error) {
 		return nil, errors.New("Cuven gateway requires a TLS certificate")
 	}
 	config := tlsConfig.Clone()
-	config.NextProtos = []string{ALPN}
+	config.NextProtos = []string{ALPN, legacyALPN}
 	config.MinVersion = tls.VersionTLS13
 	config.MaxVersion = tls.VersionTLS13
 	config.CurvePreferences = []tls.CurveID{tls.X25519MLKEM768}
@@ -169,7 +172,7 @@ func Authenticate(ctx context.Context, connection *quic.Conn, token Token, dual 
 func tokenProof(connection *quic.Conn, token Token) ([]byte, error) {
 	state := connection.ConnectionState()
 	if token == (Token{}) || state.Used0RTT || !state.SupportsDatagrams.Remote ||
-		state.TLS.NegotiatedProtocol != ALPN || !state.TLS.HandshakeComplete ||
+		(state.TLS.NegotiatedProtocol != ALPN && state.TLS.NegotiatedProtocol != legacyALPN) || !state.TLS.HandshakeComplete ||
 		state.TLS.CurveID != tls.X25519MLKEM768 {
 		return nil, ErrAuthentication
 	}
@@ -247,7 +250,11 @@ func authenticateServer(ctx context.Context, connection *quic.Conn, token Token,
 }
 
 func newSession(connection *quic.Conn, dual bool) *Session {
-	session := &Session{connection: connection, packets: make(chan []byte, queueCapacity), ipv6: dual}
+	mtu := LegacyMTU
+	if connection.ConnectionState().TLS.NegotiatedProtocol == ALPN {
+		mtu = MTU
+	}
+	session := &Session{connection: connection, packets: make(chan []byte, queueCapacity), ipv6: dual, mtu: mtu}
 	go session.receive()
 	return session
 }
@@ -274,6 +281,9 @@ func (s *Session) TryReadPacket() []byte {
 }
 
 func (s *Session) Done() <-chan struct{} { return s.connection.Context().Done() }
+
+// PacketMTU returns the inner IP limit agreed in the authenticated TLS handshake.
+func (s *Session) PacketMTU() int { return s.mtu }
 
 func (s *Session) IPv6Enabled() bool { return s.ipv6 }
 
