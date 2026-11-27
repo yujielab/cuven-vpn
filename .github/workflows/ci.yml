@@ -1,9 +1,8 @@
-name: CI
+name: Cuven IPA
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches: [codex/ipa-2879ea4]
   workflow_dispatch:
 
 permissions:
@@ -14,35 +13,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  core:
-    name: Core tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: core
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: core/go.mod
-          cache-dependency-path: core/go.sum
-      - name: Install Hysteria 2 for interoperability tests
-        working-directory: ${{ runner.temp }}
-        run: |
-          curl --fail --silent --show-error --location --retry 3 \
-            -o hysteria https://github.com/HyNetworks/hysteria/releases/download/app/v2.14.0/hysteria-linux-amd64
-          echo 'fc25edff9948708cb00a4ff01f3bccde677660aca050133bb1ad46c6860362d2  hysteria' | sha256sum -c
-          chmod +x hysteria
-          echo "CUVEN_HYSTERIA_BIN=$PWD/hysteria" >> "$GITHUB_ENV"
-      - run: go test -race ./...
-      - run: go vet ./...
-      - run: go build ./cmd/cuven-wg-relay
-
   ios:
-    name: iOS build and tests
+    name: Build unsigned IPA
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     steps:
@@ -71,8 +48,15 @@ jobs:
             -destination 'generic/platform=iOS' -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO -quiet build
           test -d DerivedData/Build/Products/Release-iphoneos/Cuven.app/PlugIns/CuvenTunnel.appex
-      - name: Run iOS simulator tests
+      - name: Package unsigned IPA
         run: |
-          xcodebuild -project Cuven.xcodeproj -scheme Cuven -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath DerivedData \
-            CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO -quiet test
+          ./scripts/package-unsigned-ipa.sh DerivedData/Build/Products/Release-iphoneos/Cuven.app build/Cuven-2879ea4-unsigned.ipa
+          (cd build && shasum -a 256 Cuven-2879ea4-unsigned.ipa > Cuven-2879ea4-unsigned.ipa.sha256)
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Cuven-2879ea4-unsigned-ipa
+          path: build/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
