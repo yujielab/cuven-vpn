@@ -1,0 +1,107 @@
+name: Cuven
+options:
+  minimumXcodeGenVersion: 2.44.1
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+targets:
+  Cuven:
+    type: application
+    platform: iOS
+    sources:
+      - ios/App
+      - ios/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.cuven.vpn
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: ios/Generated/Cuven-Info.plist
+      properties:
+        CFBundleDisplayName: Cuven
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CuvenKeychainAccessGroup: $(AppIdentifierPrefix)dev.cuven.vpn.shared
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    entitlements:
+      path: ios/Generated/Cuven.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)dev.cuven.vpn.shared
+    dependencies:
+      - target: CuvenTunnel
+        embed: true
+        link: false
+      - sdk: NetworkExtension.framework
+
+  CuvenTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - ios/Tunnel
+      - ios/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.cuven.vpn.tunnel
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    info:
+      path: ios/Generated/CuvenTunnel-Info.plist
+      properties:
+        CFBundleDisplayName: Cuven Tunnel
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CuvenKeychainAccessGroup: $(AppIdentifierPrefix)dev.cuven.vpn.shared
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    entitlements:
+      path: ios/Generated/CuvenTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)dev.cuven.vpn.shared
+    dependencies:
+      - framework: Vendor/CuvenCore.xcframework
+        embed: false
+      - sdk: NetworkExtension.framework
+
+  CuvenTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - ios/Tests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.cuven.vpn.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Cuven
+
+schemes:
+  Cuven:
+    build:
+      targets:
+        Cuven: all
+        CuvenTests: [test]
+    test:
+      targets:
+        - CuvenTests

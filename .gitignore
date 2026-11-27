@@ -1,0 +1,9 @@
+# Generated Xcode project, signing metadata, and build products
+/Cuven.xcodeproj/
+/ios/Generated/
+/DerivedData/
+/Vendor/
+*.xcuserstate
+*.xcarchive
+*.ipa
+.DS_Store
