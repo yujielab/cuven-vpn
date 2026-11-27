@@ -81,6 +81,7 @@ fi
 
 if [[ -f "$state/install-version" ]]; then
     bash "$rollback" restore
+    bash "$repo/deploy/upgrade-gateway.sh" --recover
     [[ -f "$state/token" && -s "$state/token" ]] ||
         fail '未找到原接入令牌或文件为空，请先恢复 /etc/cuven-gateway/token。'
 fi

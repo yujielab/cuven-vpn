@@ -62,7 +62,17 @@ if [ -n "${CUVEN_TEST_LIVE_WORK:-}" ]; then
             shift
             if [ "${1:-}" = --quiet ]; then shift; fi
             [ "$1" = cuven-gateway.service ] || exit 2
+            if [ "$action" = restart ] && [ -f "$CUVEN_TEST_LIVE_WORK/interrupt-upgrade" ]; then
+                rm -- "$CUVEN_TEST_LIVE_WORK/interrupt-upgrade"
+                /usr/bin/systemctl stop "${CUVEN_TEST_LIVE_WORK##*/}.service" || exit 1
+                kill -KILL "$PPID"
+                exit 75
+            fi
             exec /usr/bin/systemctl "$action" "${CUVEN_TEST_LIVE_WORK##*/}.service" ;;
+        show)
+            [ "$2" = cuven-gateway.service ] || exit 2
+            shift 2
+            exec /usr/bin/systemctl show "${CUVEN_TEST_LIVE_WORK##*/}.service" "$@" ;;
         is-enabled) echo disabled; exit 1 ;;
         *) exit 2 ;;
     esac
@@ -204,6 +214,35 @@ systemctl restart "$unit"
 check_service
 [[ "$first_pid" != "$(systemctl show "$unit" -p MainPID --value)" ]]
 [[ "$token_before" == "$(sha256sum "$work/etc/cuven-gateway/token")" ]]
+# Keep the previous PID1 tests outside the new case's start-limit window.
+systemctl reset-failed "$unit"
+packaged="$work/pkg/bin/cuven-gateway-$(uname -m)"
+mv -- "$packaged" "$work/working-gateway"
+cat >"$packaged" <<BAD_CANDIDATE
+#!/bin/sh
+case "\$1" in -check-tls) exec "$work/working-gateway" "\$@" ;; esac
+exit 75
+BAD_CANDIDATE
+chmod 0700 "$packaged"
+in_network unshare --mount --propagation private -- bash -eu -c '
+    work=$1
+    mount --bind "$work/etc" /etc
+    mount --bind "$work/locks" /run/lock
+    export PATH="$work/shim:$PATH" CUVEN_TEST_LIVE_WORK="$work" CUVEN_TEST_FAULT="$work/unused"
+    upgrade() { bash "$work/pkg/deploy/setup-gateway.sh" --upgrade; }
+    touch "$work/interrupt-upgrade"
+    if upgrade >"$work/interrupted.log" 2>&1; then exit 1; fi
+    [[ -f /etc/cuven-gateway/.upgrade-recovery/service-state ]]
+    if systemctl is-active --quiet cuven-gateway.service; then exit 1; fi
+    if upgrade >"$work/upgrade-failure.log" 2>&1; then exit 1; fi
+    grep -Fq "新程序启动失败，已恢复原网关程序和服务状态" "$work/upgrade-failure.log"
+    cmp "$work/working-gateway" /etc/cuven-gateway/cuven-gateway
+    [[ ! -e /etc/cuven-gateway/.upgrade-recovery ]]
+' bash "$work"
+check_service
+[[ "$token_before" == "$(sha256sum "$work/etc/cuven-gateway/token")" ]]
+in_network env SSL_CERT_FILE="$work/qa.crt" "$probe" "$work/etc/cuven-gateway/token"
+echo "Verified old listener authentication after an interrupted binary upgrade and a rejected candidate."
 systemctl stop "$unit"
 if in_network ip link show cuven0 >/dev/null 2>&1; then
     echo "Tunnel interface remained after service stop" >&2

@@ -47,6 +47,7 @@ if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
     exec 9>/run/lock/cuven-gateway-install.lock
     flock -n 9 || fail '另一个网关安装进程正在运行。'
     bash "$installer_dir/gateway-config-rollback.sh" restore
+    bash "$installer_dir/upgrade-gateway.sh" --recover
     unit=/etc/systemd/system/cuven-gateway.service
     current_cert=$(sed -n 's/^LoadCredential=certificate://p' "$unit")
     current_key=$(sed -n 's/^LoadCredential=private-key://p' "$unit")
