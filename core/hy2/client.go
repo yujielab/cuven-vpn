@@ -38,6 +38,8 @@ type Config struct {
 	RootCAs               *x509.CertPool
 	ReceiveBytesPerSecond uint64
 	RequirePostQuantum    bool
+	InsecureTLS           bool
+	SalamanderPassword    string
 }
 
 // Client owns one authenticated QUIC connection for all streams and sessions.
@@ -53,6 +55,9 @@ type Client struct {
 
 // Dial establishes TLS and authenticates before admitting proxy traffic.
 func Dial(ctx context.Context, config Config) (*Client, error) {
+	if config.InsecureTLS && config.RequirePostQuantum {
+		return nil, errors.New("strict post-quantum Hysteria requires TLS certificate verification")
+	}
 	if err := validateAddress(config.Address); err != nil {
 		return nil, fmt.Errorf("server endpoint: %w", err)
 	}
@@ -74,10 +79,11 @@ func Dial(ctx context.Context, config Config) (*Client, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, handshakeBudget)
 	defer cancel()
 	tlsConfig := &tls.Config{
-		ServerName: config.ServerName,
-		RootCAs:    config.RootCAs,
-		NextProtos: []string{http3.NextProtoH3},
-		MinVersion: tls.VersionTLS13,
+		ServerName:         config.ServerName,
+		RootCAs:            config.RootCAs,
+		NextProtos:         []string{http3.NextProtoH3},
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: config.InsecureTLS, // Explicit per-profile compatibility setting.
 	}
 	if config.RequirePostQuantum {
 		tlsConfig.CurvePreferences = []tls.CurveID{tls.X25519MLKEM768}
@@ -92,7 +98,7 @@ func Dial(ctx context.Context, config Config) (*Client, error) {
 		MaxConnectionReceiveWindow:     8 << 20,
 		MaxIdleTimeout:                 60 * time.Second,
 		KeepAlivePeriod:                25 * time.Second,
-	})
+	}, config.SalamanderPassword)
 	if err != nil {
 		return nil, fmt.Errorf("connect QUIC: %w", err)
 	}

@@ -1,4 +1,4 @@
-// Package wg runs an in-memory WireGuard device over the Cuven UDP relay.
+// Package wg runs an in-memory WireGuard device over UDP or the Cuven relay.
 package wg
 
 import (
@@ -16,6 +16,7 @@ import (
 
 	"github.com/yujielab/cuven-vpn/core/cuventransport"
 	"github.com/yujielab/cuven-vpn/core/tunnel"
+	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 )
 
@@ -33,6 +34,8 @@ type Config struct {
 	PeerPublicKey string
 	PresharedKey  string
 	TransportKey  string
+	// Direct uses standard WireGuard UDP with no Cuven relay.
+	Direct bool
 	// Camouflage selects the encrypted, padded v2 envelope. The relay must
 	// use the same version.
 	Camouflage bool
@@ -51,14 +54,16 @@ type Tunnel struct {
 	cancel context.CancelFunc
 }
 
-// Open authenticates the relay and the WireGuard peer before returning. The
-// tunnel closes when ctx is canceled, Close is called, or a health probe fails.
+// Open authenticates the WireGuard peer and, when configured, the Cuven relay.
 func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 	if mtu < 1280 || mtu > wireGuardMTU {
 		return nil, fmt.Errorf("Cuven tunnel MTU must be between 1280 and %d", wireGuardMTU)
 	}
 	if cfg.HTTPS3 && !cfg.Camouflage {
 		return nil, errors.New("Cuven HTTPS/3 requires the v2 envelope")
+	}
+	if cfg.Direct && (cfg.TransportKey != "" || cfg.Camouflage || cfg.HTTPS3) {
+		return nil, errors.New("direct WireGuard does not use Cuven relay settings")
 	}
 
 	privateKey, err := decodeKey(cfg.PrivateKey)
@@ -69,11 +74,7 @@ func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 	if err != nil {
 		return nil, errors.New("invalid WireGuard peer public key")
 	}
-	sharedKey, err := decodeKey(cfg.TransportKey)
-	if err != nil {
-		return nil, errors.New("invalid Cuven relay key")
-	}
-	defer clear(sharedKey[:])
+	defer clear(privateKey[:])
 	var pskLine string
 	if cfg.PresharedKey != "" {
 		psk, err := decodeKey(cfg.PresharedKey)
@@ -82,15 +83,23 @@ func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 		}
 		pskLine = "preshared_key=" + hex.EncodeToString(psk[:]) + "\n"
 	}
+	var sharedKey [32]byte
 	var codec *cuventransport.Codec
-	if !cfg.HTTPS3 {
-		version := cuventransport.Version1
-		if cfg.Camouflage {
-			version = cuventransport.Version2
-		}
-		codec, err = cuventransport.NewCodecVersion(sharedKey[:], version)
+	if !cfg.Direct {
+		sharedKey, err = decodeKey(cfg.TransportKey)
 		if err != nil {
-			return nil, err
+			return nil, errors.New("invalid Cuven relay key")
+		}
+		defer clear(sharedKey[:])
+		if !cfg.HTTPS3 {
+			version := cuventransport.Version1
+			if cfg.Camouflage {
+				version = cuventransport.Version2
+			}
+			codec, err = cuventransport.NewCodecVersion(sharedKey[:], version)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -102,19 +111,24 @@ func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 	}
 	var connectionError error
 	for _, endpoint := range endpoints {
-		dial := func(port uint16) (*relaySession, error) {
-			if !cfg.HTTPS3 {
-				carrier, err := dialUDPRelay(endpoint, port)
-				if err != nil {
-					return nil, err
+		var bind conn.Bind
+		if cfg.Direct {
+			bind = conn.NewDefaultBind()
+		} else {
+			bind = newRelayBind(endpoint, func(port uint16) (*relaySession, error) {
+				if !cfg.HTTPS3 {
+					carrier, err := dialUDPRelay(endpoint, port)
+					if err != nil {
+						return nil, err
+					}
+					return &relaySession{relayCarrier: carrier, codec: codec}, nil
 				}
-				return &relaySession{relayCarrier: carrier, codec: codec}, nil
-			}
-			dialCtx, stopDial := context.WithTimeout(starting, relayTimeout+time.Second)
-			defer stopDial()
-			return dialHTTPS3Relay(dialCtx, endpoint, port, cfg.Endpoint, cfg.ServerName, cfg.RootCAs, sharedKey[:])
+				dialCtx, stopDial := context.WithTimeout(starting, relayTimeout+time.Second)
+				defer stopDial()
+				return dialHTTPS3Relay(dialCtx, endpoint, port, cfg.Endpoint, cfg.ServerName, cfg.RootCAs, sharedKey[:])
+			})
 		}
-		t, usable, err := openEndpoint(starting, ctx, endpoint, dial, mtu, privateKey, publicKey, pskLine)
+		t, usable, err := openEndpoint(starting, ctx, endpoint, bind, mtu, privateKey, publicKey, pskLine)
 		if err == nil {
 			return t, nil
 		}
@@ -124,14 +138,14 @@ func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 		connectionError = err
 	}
 	if connectionError == nil {
-		connectionError = errors.New("Cuven relay did not resolve to a usable address")
+		connectionError = errors.New("WireGuard server did not resolve to a usable address")
 	}
 	return nil, connectionError
 }
 
-func openEndpoint(starting, lifetime context.Context, endpoint netip.AddrPort, dial relayDial, mtu int, privateKey, publicKey [32]byte, pskLine string) (*Tunnel, bool, error) {
+func openEndpoint(starting, lifetime context.Context, endpoint netip.AddrPort, bind conn.Bind, mtu int, privateKey, publicKey [32]byte, pskLine string) (*Tunnel, bool, error) {
 	tun := newMemoryTUN(mtu)
-	bind := newRelayBind(endpoint, dial)
+	relay, _ := bind.(*relayBind)
 	dev := device.NewDevice(tun, bind, device.NewLogger(device.LogLevelSilent, ""))
 	applied := false
 	defer func() {
@@ -148,55 +162,79 @@ func openEndpoint(starting, lifetime context.Context, endpoint netip.AddrPort, d
 		return nil, false, err
 	}
 
-	probeCtx, stopProbe := context.WithTimeout(starting, relayTimeout)
-	err := bind.probe(probeCtx)
-	stopProbe()
-	if err != nil {
-		return nil, false, err
+	if relay != nil {
+		probeCtx, stopProbe := context.WithTimeout(starting, relayTimeout)
+		err := relay.probe(probeCtx)
+		stopProbe()
+		if err != nil {
+			return nil, false, err
+		}
 	}
-	if err := waitForHandshake(starting, dev); err != nil {
+	handshake, err := waitForHandshake(starting, dev)
+	if err != nil {
 		return nil, true, err
 	}
 
 	ctx, cancel := context.WithCancel(lifetime)
-	t := &Tunnel{device: dev, tun: tun, bind: bind, cancel: cancel}
+	t := &Tunnel{device: dev, tun: tun, bind: relay, cancel: cancel}
 	applied = true
-	go t.monitor(ctx)
+	go t.monitor(ctx, handshake)
 	return t, true, nil
 }
 
-func waitForHandshake(ctx context.Context, dev *device.Device) error {
+func latestHandshake(dev *device.Device) (string, error) {
+	state, err := dev.IpcGet()
+	if err != nil {
+		return "", errors.New("could not inspect WireGuard peer state")
+	}
+	// The UAPI state also contains key material. Return only the handshake time.
+	for line := range strings.SplitSeq(state, "\n") {
+		if seconds, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok && seconds != "0" {
+			return strings.Clone(seconds), nil
+		}
+	}
+	return "", nil
+}
+
+func waitForHandshake(ctx context.Context, dev *device.Device) (string, error) {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		state, err := dev.IpcGet()
-		if err != nil {
-			return errors.New("could not inspect WireGuard peer state")
-		}
-		// The upstream device exposes handshake time through its UAPI. Do
-		// not retain or log the configuration snapshot, which includes keys.
-		for line := range strings.SplitSeq(state, "\n") {
-			if seconds, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok && seconds != "0" {
-				return nil
-			}
+		handshake, err := latestHandshake(dev)
+		if err != nil || handshake != "" {
+			return handshake, err
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("WireGuard peer handshake: %w", ctx.Err())
+			return "", fmt.Errorf("WireGuard peer handshake: %w", ctx.Err())
 		case <-tick.C:
 		}
 	}
 }
 
-func (t *Tunnel) monitor(ctx context.Context) {
+func (t *Tunnel) monitor(ctx context.Context, lastHandshake string) {
 	ticker := time.NewTicker(healthInterval)
 	defer ticker.Stop()
 	defer t.device.Close()
+	updated := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case now := <-ticker.C:
+			if t.bind == nil {
+				handshake, err := latestHandshake(t.device)
+				if err != nil {
+					return
+				}
+				if handshake != "" && handshake != lastHandshake {
+					lastHandshake = handshake
+					updated = now
+				} else if now.Sub(updated) >= device.RejectAfterTime {
+					return
+				}
+				continue
+			}
 			probeCtx, cancel := context.WithTimeout(ctx, healthTimeout)
 			err := t.bind.probe(probeCtx)
 			cancel()
@@ -252,18 +290,18 @@ func (t *Tunnel) Close() error {
 func resolveEndpoints(ctx context.Context, endpoint string) ([]netip.AddrPort, error) {
 	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil || host == "" {
-		return nil, errors.New("Cuven relay endpoint must contain a host and port")
+		return nil, errors.New("WireGuard endpoint must contain a host and port")
 	}
 	value, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || value == 0 {
-		return nil, errors.New("invalid Cuven relay port")
+		return nil, errors.New("invalid WireGuard port")
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return []netip.AddrPort{netip.AddrPortFrom(addr.Unmap(), uint16(value))}, nil
 	}
 	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
-		return nil, fmt.Errorf("resolve Cuven relay: %w", err)
+		return nil, fmt.Errorf("resolve WireGuard server: %w", err)
 	}
 	endpoints := make([]netip.AddrPort, 0, min(len(addresses), 3))
 	for _, addr := range addresses {

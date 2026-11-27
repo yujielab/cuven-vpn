@@ -1,4 +1,4 @@
-package tunnel
+package packetpolicy
 
 import (
 	"encoding/binary"

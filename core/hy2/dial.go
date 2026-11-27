@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"time"
 
+	"github.com/apernet/hysteria/extras/v2/obfs"
 	"github.com/quic-go/quic-go"
 )
 
@@ -16,9 +18,9 @@ const (
 	maxAddressAttempts  = 4
 )
 
-func dialQUIC(ctx context.Context, host, port string, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
-	if _, err := netip.ParseAddr(host); err == nil {
-		return quic.DialAddr(ctx, net.JoinHostPort(host, port), tlsConfig, config)
+func dialQUIC(ctx context.Context, host, port string, tlsConfig *tls.Config, config *quic.Config, salamander string) (*quic.Conn, error) {
+	if address, err := netip.ParseAddr(host); err == nil {
+		return dialQUICAddr(ctx, address, port, tlsConfig, config, salamander)
 	}
 	// Resolve before allocating UDP sockets so DNS shares the connection deadline.
 	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
@@ -29,7 +31,7 @@ func dialQUIC(ctx context.Context, host, port string, tlsConfig *tls.Config, con
 		return nil, errors.New("Hysteria server has no IP addresses")
 	}
 	if len(addresses) == 1 {
-		return quic.DialAddr(ctx, net.JoinHostPort(addresses[0].String(), port), tlsConfig, config)
+		return dialQUICAddr(ctx, addresses[0], port, tlsConfig, config, salamander)
 	}
 	// Prefer the system resolver's first result and stagger the other family
 	// next. A broken IPv6 or IPv4 path will cost one short delay on mobile.
@@ -42,10 +44,44 @@ func dialQUIC(ctx context.Context, host, port string, tlsConfig *tls.Config, con
 		}
 	}
 	addresses = addresses[:min(len(addresses), maxAddressAttempts)]
-	return raceQUIC(ctx, addresses, port, tlsConfig, config)
+	return raceQUIC(ctx, addresses, port, tlsConfig, config, salamander)
 }
 
-func raceQUIC(ctx context.Context, addresses []netip.Addr, port string, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
+func dialQUICAddr(ctx context.Context, address netip.Addr, port string, tlsConfig *tls.Config, config *quic.Config, salamander string) (*quic.Conn, error) {
+	if salamander == "" {
+		return quic.DialAddr(ctx, net.JoinHostPort(address.String(), port), tlsConfig, config)
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return nil, err
+	}
+	address = address.Unmap()
+	network := "udp6"
+	if address.Is4() {
+		network = "udp4"
+	}
+	socket, err := net.ListenUDP(network, nil)
+	if err != nil {
+		return nil, err
+	}
+	wrapped, err := obfs.WrapPacketConnSalamander(socket, []byte(salamander))
+	if err != nil {
+		_ = socket.Close()
+		return nil, err
+	}
+	config = config.Clone()
+	config.InitialPacketSize = 1200
+	remote := net.UDPAddrFromAddrPort(netip.AddrPortFrom(address, uint16(portNumber)))
+	connection, err := quic.Dial(ctx, wrapped, remote, tlsConfig, config)
+	if err != nil {
+		_ = wrapped.Close()
+		return nil, err
+	}
+	context.AfterFunc(connection.Context(), func() { _ = wrapped.Close() })
+	return connection, nil
+}
+
+func raceQUIC(ctx context.Context, addresses []netip.Addr, port string, tlsConfig *tls.Config, config *quic.Config, salamander string) (*quic.Conn, error) {
 	type result struct {
 		connection *quic.Conn
 		err        error
@@ -64,7 +100,7 @@ func raceQUIC(ctx context.Context, addresses []netip.Addr, port string, tlsConfi
 				case <-timer.C:
 				}
 			}
-			connection, err := quic.DialAddr(attempts, net.JoinHostPort(address.String(), port), tlsConfig, config.Clone())
+			connection, err := dialQUICAddr(attempts, address, port, tlsConfig, config.Clone(), salamander)
 			select {
 			case results <- result{connection: connection, err: err}:
 			case <-attempts.Done():

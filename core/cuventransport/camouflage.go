@@ -11,18 +11,28 @@ const (
 	v2MetadataSize = 3
 	v2Overhead     = chacha20poly1305.NonceSizeX + v2MetadataSize + chacha20poly1305.Overhead
 	v2PaddingMax   = 128
+	v2LengthBlock  = 64
 )
 
 func paddingLimit(size int) int {
 	return min(v2PaddingMax, MaxDatagramSize-v2Overhead-size)
 }
 
+func paddedLengthRange(size int) (int, int) {
+	length := size + v2Overhead
+	start := min(MaxDatagramSize, (length+v2LengthBlock-1)/v2LengthBlock*v2LengthBlock)
+	return start, min(MaxDatagramSize, start+v2LengthBlock-1)
+}
+
 func randomPadding(size int) (int, error) {
+	// Payload lengths within a block share the same range of wire lengths.
+	first, last := paddedLengthRange(size)
 	var choice [2]byte
 	if _, err := rand.Read(choice[:]); err != nil {
 		return 0, err
 	}
-	return int(binary.BigEndian.Uint16(choice[:])) * (paddingLimit(size) + 1) / 65536, nil
+	offset := int(binary.BigEndian.Uint16(choice[:])) * (last - first + 1) / 65536
+	return first + offset - size - v2Overhead, nil
 }
 
 func (c *Codec) sealV2(direction Direction, kind Kind, payload []byte, padding int) ([]byte, error) {

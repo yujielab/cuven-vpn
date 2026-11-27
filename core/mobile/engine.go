@@ -3,14 +3,13 @@ package mobile
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
-	"io"
 	"sync"
 
-	"github.com/yujielab/cuven-vpn/core/hy2"
-	"github.com/yujielab/cuven-vpn/core/tunnel"
-	"github.com/yujielab/cuven-vpn/core/wg"
+	"github.com/yujielab/cuven-vpn/core/iptunnel"
+	"github.com/yujielab/cuven-vpn/core/packetpolicy"
 )
 
 const (
@@ -24,7 +23,6 @@ var (
 	errEngineUsed     = errors.New("packet engine has already been used")
 	errEngineInactive = errors.New("packet engine is inactive")
 	errInvalidBatch   = errors.New("invalid packet batch")
-	errInvalidRate    = errors.New("HY2 receive rate must be nonnegative")
 	errInvalidMTU     = errors.New("tunnel MTU must be between 1280 and 9000")
 )
 
@@ -40,18 +38,18 @@ const (
 // Engine owns one VPN session and its packet pipeline.
 // Create a new engine for each connection attempt.
 type Engine struct {
-	mu     sync.Mutex
-	state  engineState
-	cancel context.CancelFunc
-	live   *session
+	mu             sync.Mutex
+	state          engineState
+	cancel         context.CancelFunc
+	live           *session
+	rejectPlainDNS bool
 }
 
 type session struct {
-	ctx       context.Context
-	transport io.Closer
-	tunnel    packetTunnel
-	mtu       int
-	policy    packetPolicy
+	ctx    context.Context
+	tunnel packetTunnel
+	mtu    int
+	policy packetPolicy
 }
 
 type packetPolicy struct {
@@ -69,58 +67,36 @@ type packetTunnel interface {
 // NewEngine constructs an idle packet engine for the native tunnel provider.
 func NewEngine() *Engine { return &Engine{} }
 
-// Start establishes the transport and initializes the IP stack. Stop may be
-// called concurrently to cancel startup. The address includes the server port.
-func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, mtu int64, requirePostQuantum, blockLAN, highSecurity bool) error {
-	if receiveBytesPerSecond < 0 {
-		return errInvalidRate
+// RequireEncryptedDNS enables plaintext DNS filtering for any transport.
+// Configure it before starting the engine.
+func (e *Engine) RequireEncryptedDNS() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.state != engineIdle {
+		return errEngineUsed
 	}
-	policy := packetPolicy{blockPlainDNS: highSecurity}
-	return e.start(mtu, policy, func(ctx context.Context) (packetTunnel, io.Closer, error) {
-		client, err := hy2.Dial(ctx, hy2.Config{
-			Address:               address,
-			Auth:                  auth,
-			ServerName:            serverName,
-			ReceiveBytesPerSecond: uint64(receiveBytesPerSecond),
-			RequirePostQuantum:    requirePostQuantum,
-		})
-		if err != nil {
-			return nil, nil, err
+	e.rejectPlainDNS = true
+	return nil
+}
+
+// StartCuven opens the native authenticated Cuven IP tunnel.
+func (e *Engine) StartCuven(endpoint, accessToken, serverName string, requireIPv6, blockLAN bool) error {
+	token, err := iptunnel.ParseToken(accessToken)
+	if err != nil {
+		return err
+	}
+	defer clear(token[:])
+	return e.start(iptunnel.MTU, packetPolicy{blockLAN: blockLAN}, func(ctx context.Context) (packetTunnel, error) {
+		session, err := iptunnel.Dial(ctx, endpoint, token, &tls.Config{ServerName: serverName})
+		if err == nil && requireIPv6 && !session.IPv6Enabled() {
+			_ = session.Close()
+			return nil, errors.New("Cuven gateway does not support IPv6")
 		}
-		if !client.UDPEnabled() {
-			_ = client.Close()
-			return nil, nil, errors.New("the Hysteria 2 server must allow UDP for tunnel DNS")
-		}
-		stack, err := tunnel.Open(ctx, client, tunnel.Options{MTU: uint32(mtu), BlockLAN: blockLAN})
-		if err != nil {
-			_ = client.Close()
-			return nil, nil, err
-		}
-		return stack, client, nil
+		return session, err
 	})
 }
 
-// StartWireGuard connects to the Cuven relay and awaits the peer handshake.
-// Keys are 32 bytes encoded as padded base64. An empty PSK omits it.
-// HTTPS/3 uses a relay with a matching v2 envelope and a trusted certificate.
-func (e *Engine) StartWireGuard(endpoint, privateKey, peerPublicKey, presharedKey, transportKey string, mtu int64, blockLAN, camouflage, https3 bool, serverName string) error {
-	policy := packetPolicy{blockLAN: blockLAN, blockPlainDNS: camouflage}
-	return e.start(mtu, policy, func(ctx context.Context) (packetTunnel, io.Closer, error) {
-		stack, err := wg.Open(ctx, wg.Config{
-			Endpoint:      endpoint,
-			PrivateKey:    privateKey,
-			PeerPublicKey: peerPublicKey,
-			PresharedKey:  presharedKey,
-			TransportKey:  transportKey,
-			Camouflage:    camouflage,
-			HTTPS3:        https3,
-			ServerName:    serverName,
-		}, int(mtu))
-		return stack, nil, err
-	})
-}
-
-func (e *Engine) start(mtu int64, policy packetPolicy, open func(context.Context) (packetTunnel, io.Closer, error)) error {
+func (e *Engine) start(mtu int64, policy packetPolicy, open func(context.Context) (packetTunnel, error)) error {
 	if mtu < minMTU || mtu > maxMTU {
 		return errInvalidMTU
 	}
@@ -130,17 +106,18 @@ func (e *Engine) start(mtu int64, policy packetPolicy, open func(context.Context
 		e.mu.Unlock()
 		return errEngineUsed
 	}
+	policy.blockPlainDNS = policy.blockPlainDNS || e.rejectPlainDNS
 	ctx, cancel := context.WithCancel(context.Background())
 	e.state = engineStarting
 	e.cancel = cancel
 	e.mu.Unlock()
 
-	stack, transport, err := open(ctx)
+	stack, err := open(ctx)
 	if err != nil {
 		e.Stop()
 		return err
 	}
-	live := &session{ctx: ctx, transport: transport, tunnel: stack, mtu: int(mtu), policy: policy}
+	live := &session{ctx: ctx, tunnel: stack, mtu: int(mtu), policy: policy}
 
 	e.mu.Lock()
 	if e.state == engineStopped {
@@ -168,11 +145,11 @@ func (e *Engine) WriteBatch(batch []byte) error {
 		return err
 	}
 	for _, packet := range packets[:count] {
-		if (live.policy.blockLAN && tunnel.IsLANPacket(packet)) ||
-			(live.policy.blockPlainDNS && tunnel.RejectPlainDNS(packet)) {
+		if (live.policy.blockLAN && packetpolicy.IsLANPacket(packet)) ||
+			(live.policy.blockPlainDNS && packetpolicy.RejectPlainDNS(packet)) {
 			continue
 		}
-		if err := live.tunnel.WritePacket(packet); err != nil && !errors.Is(err, tunnel.ErrInvalidPacket) {
+		if err := live.tunnel.WritePacket(packet); err != nil && !errors.Is(err, iptunnel.ErrInvalidPacket) {
 			return err
 		}
 	}
@@ -237,9 +214,6 @@ func (e *Engine) current() *session {
 }
 
 func (s *session) close() {
-	if s.transport != nil {
-		_ = s.transport.Close()
-	}
 	_ = s.tunnel.Close()
 }
 

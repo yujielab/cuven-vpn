@@ -39,6 +39,62 @@ func TestTunnelThroughCuvenRelay(t *testing.T) {
 	})
 }
 
+func TestDirectWireGuardTunnel(t *testing.T) {
+	const mtu = 1280
+	clientKey := newWireGuardKey(t)
+	serverKey := newWireGuardKey(t)
+	psk := randomSharedKey(t)
+	server, serverTUN := startWireGuardTestPeer(t, mtu, clientKey, serverKey, psk)
+
+	cfg := Config{
+		Direct:        true,
+		Endpoint:      localEndpoint(t, server).String(),
+		PrivateKey:    base64.StdEncoding.EncodeToString(clientKey.Bytes()),
+		PeerPublicKey: base64.StdEncoding.EncodeToString(serverKey.PublicKey().Bytes()),
+		PresharedKey:  base64.StdEncoding.EncodeToString(psk),
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	client, err := Open(ctx, cfg, mtu)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	assertPacketRoundTrip(t, ctx, client, serverTUN, "192.0.2.2", "198.51.100.8", mtu)
+	assertPacketRoundTrip(t, ctx, client, serverTUN, "2001:db8::2", "2001:db8:1::8", mtu)
+
+	t.Run("wrong peer PSK", func(t *testing.T) {
+		bad := cfg
+		bad.PresharedKey = base64.StdEncoding.EncodeToString(randomSharedKey(t))
+		short, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+		defer cancel()
+		unexpected, err := Open(short, bad, mtu)
+		if unexpected != nil {
+			unexpected.Close()
+			t.Fatal("direct peer accepted an incorrect PSK")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "WireGuard peer handshake") {
+			t.Fatalf("wanted incomplete WireGuard handshake, got %v", err)
+		}
+	})
+}
+
+func startWireGuardTestPeer(t *testing.T, mtu int, clientKey, serverKey *ecdh.PrivateKey, psk []byte) (*device.Device, *memoryTUN) {
+	t.Helper()
+	tun := newMemoryTUN(mtu)
+	server := device.NewDevice(tun, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	t.Cleanup(server.Close)
+	cfg := fmt.Sprintf("private_key=%s\npublic_key=%s\npreshared_key=%s\nallowed_ip=192.0.2.2/32\nallowed_ip=2001:db8::2/128\n",
+		hex.EncodeToString(serverKey.Bytes()), hex.EncodeToString(clientKey.PublicKey().Bytes()), hex.EncodeToString(psk))
+	if err := server.IpcSet(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Up(); err != nil {
+		t.Fatal(err)
+	}
+	return server, tun
+}
+
 func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version, https3 bool) {
 	t.Helper()
 	const mtu = 1280
@@ -47,17 +103,7 @@ func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version, h
 	relayKey := randomSharedKey(t)
 	psk := randomSharedKey(t)
 
-	serverTUN := newMemoryTUN(mtu)
-	server := device.NewDevice(serverTUN, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
-	defer server.Close()
-	serverCfg := fmt.Sprintf("private_key=%s\npublic_key=%s\npreshared_key=%s\nallowed_ip=192.0.2.2/32\nallowed_ip=2001:db8::2/128\n",
-		hex.EncodeToString(serverKey.Bytes()), hex.EncodeToString(clientKey.PublicKey().Bytes()), hex.EncodeToString(psk))
-	if err := server.IpcSet(serverCfg); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.Up(); err != nil {
-		t.Fatal(err)
-	}
+	server, serverTUN := startWireGuardTestPeer(t, mtu, clientKey, serverKey, psk)
 	serverAddr := localEndpoint(t, server)
 
 	listener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})

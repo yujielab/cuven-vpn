@@ -81,7 +81,7 @@ func TestDialFallsBackWhenFirstAddressIsUnreachable(t *testing.T) {
 	}, port, &tls.Config{
 		ServerName: "127.0.0.1", RootCAs: roots,
 		NextProtos: []string{http3.NextProtoH3}, MinVersion: tls.VersionTLS13,
-	}, &quic.Config{})
+	}, &quic.Config{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,7 +12,6 @@ struct CuvenApp: App {
 
 private struct ConnectionView: View {
     @StateObject private var vpn = VPNController()
-    @State private var showsImport = false
     @Environment(\.scenePhase) private var scenePhase
 
     private let accent = Color(red: 0.05, green: 0.48, blue: 0.41)
@@ -30,11 +29,11 @@ private struct ConnectionView: View {
                             .accessibilityHidden(true)
                         Text(statusTitle)
                             .font(.title2.bold())
-                        Text((vpn.activeTransport ?? vpn.transport).title)
+                        Text(VPNTransport.cuven.title)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        if !vpn.displayedHost.isEmpty {
-                            Text(vpn.displayedHost)
+                        if !vpn.host.isEmpty {
+                            Text(vpn.host)
                                 .font(.subheadline.monospaced())
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
@@ -62,12 +61,6 @@ private struct ConnectionView: View {
                 }
 
                 Section("服务器") {
-                    Picker("协议", selection: Binding(get: { vpn.transport }, set: { vpn.selectTransport($0) })) {
-                        ForEach(VPNTransport.allCases) { transport in
-                            Text(transport.title).tag(transport)
-                        }
-                    }
-
                     TextField("服务器地址", text: $vpn.host)
                         .textContentType(.URL)
                         .textInputAutocapitalization(.never)
@@ -79,36 +72,13 @@ private struct ConnectionView: View {
                         .keyboardType(.numberPad)
                         .accessibilityLabel("端口")
 
-                    if vpn.transport == .hy2 {
-                        SecureField(vpn.hasCredential ? "凭据已保存，输入以替换" : "连接凭据", text: $vpn.credential)
-                            .cuvenSecureInput()
-                            .accessibilityLabel("HY2 连接凭据")
-
-                        Button {
-                            showsImport = true
-                        } label: {
-                            Label("导入 HY2 链接", systemImage: "link")
-                        }
-                    } else {
-                        TextField("隧道地址，例如 10.66.0.2/32", text: $vpn.tunnelAddresses)
-                            .cuvenPlainInput()
-                            .accessibilityLabel("Cuven WG 隧道地址")
-                        TextField("服务端 WireGuard 公钥", text: $vpn.peerPublicKey)
-                            .cuvenPlainInput()
-                            .accessibilityLabel("服务端 WireGuard 公钥")
-                        SecureField(vpn.hasCredential ? "客户端私钥已保存" : "客户端 WireGuard 私钥", text: $vpn.privateKey)
-                            .cuvenSecureInput()
-                            .accessibilityLabel("客户端 WireGuard 私钥")
-                        SecureField(vpn.hasCredential ? "封装密钥已保存" : "Cuven 封装密钥", text: $vpn.relayKey)
-                            .cuvenSecureInput()
-                            .accessibilityLabel("Cuven 封装密钥")
-                        SecureField("WireGuard 预共享密钥（可选）", text: $vpn.presharedKey)
-                            .cuvenSecureInput()
-                            .accessibilityLabel("可选的 WireGuard 预共享密钥")
-                        Text("Cuven WG 连接配套中继。替换密钥时，请重新填写私钥和封装密钥。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                    TextField("TLS 证书域名（可选）", text: $vpn.serverName)
+                        .cuvenPlainInput()
+                        .keyboardType(.URL)
+                    SecureField(vpn.hasCredential ? "令牌已保存，输入以替换" : "网关接入令牌", text: $vpn.credential)
+                        .cuvenSecureInput()
+                        .accessibilityLabel("Cuven IP 接入令牌")
+                    Toggle("网关支持 IPv6", isOn: $vpn.enableIPv6)
                 }
                 .disabled(!vpn.canEdit)
 
@@ -118,6 +88,7 @@ private struct ConnectionView: View {
                     } label: {
                         Label("连接设置", systemImage: "slider.horizontal.3")
                     }
+                    .accessibilityIdentifier("connection-settings")
                     if vpn.canSave {
                         Button(vpn.autoConnectPaused && vpn.autoConnect != .off ? "保存并恢复自动连接" : "保存设置") {
                             Task { await vpn.save(connect: false) }
@@ -128,9 +99,6 @@ private struct ConnectionView: View {
             .navigationTitle("Cuven")
             .scrollDismissesKeyboard(.interactively)
             .tint(accent)
-            .sheet(isPresented: $showsImport) {
-                ImportView { vpn.importURI($0) }
-            }
             .task { await vpn.load() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { vpn.refreshStatus() }
@@ -193,80 +161,42 @@ private struct NetworkSettingsView: View {
             .disabled(!vpn.canEdit)
 
             Section {
-                Toggle("自动回退协议", isOn: $vpn.automaticFallback)
-                    .disabled(!vpn.hasAlternateTransport || vpn.requirePostQuantum || vpn.highSecurity)
-            } footer: {
-                Text("保存两种协议的普通模式配置后可启用。首选服务器连接失败时尝试另一种协议。高安全模式和严格后量子模式保持使用当前协议。")
-            }
-            .disabled(!vpn.canEdit)
-
-            if vpn.transport == .hy2 {
-                Section {
-                    TextField("TLS 服务器名称（可选）", text: $vpn.serverName)
-                        .cuvenPlainInput()
-                        .keyboardType(.URL)
-                    Toggle("要求后量子密钥交换", isOn: $vpn.requirePostQuantum)
-                } footer: {
-                    Text("启用后，HY2 只接受 TLS 1.3 的 X25519MLKEM768 混合密钥交换。服务器需要支持该算法。")
-                }
-                .disabled(!vpn.canEdit)
-            }
-
-            Section {
                 Toggle("高安全模式", isOn: $vpn.highSecurity)
                 if !vpn.highSecurity {
                     Toggle("阻止局域网访问", isOn: $vpn.blockLAN)
-                    Toggle("防止应用绕过 VPN", isOn: $vpn.preventBypass)
                 }
             } footer: {
                 if vpn.highSecurity {
-                    Text("强制路由和隧道内 HTTPS DNS。WebRTC 随 VPN 出口通行。服务器需填写 IP，Cuven WG 使用 v2 中继。")
+                    Text("强制路由和隧道内加密 DNS。WebRTC 随 VPN 出口通行。服务器需填写 IP。")
                 } else {
-                    Text("局域网开关控制隧道期间的本地网络访问。防绕过由 iOS 强制路由，部分系统流量仍由 iOS 处理。")
+                    Text("Cuven IP 使用全流量路由，部分系统流量仍由 iOS 处理。")
                 }
             }
             .disabled(!vpn.canEdit)
 
-            if vpn.highSecurity && vpn.transport == .cuvenWG {
-                Section {
-                    Toggle("HTTPS/3 载体", isOn: $vpn.https3Camouflage)
-                    if vpn.https3Camouflage {
-                        TextField("HTTPS 证书域名", text: $vpn.serverName)
+            Section {
+                Toggle("自定义加密 DNS", isOn: $vpn.useEncryptedDNS)
+                if vpn.useEncryptedDNS {
+                    Picker("加密协议", selection: $vpn.useDNSOverTLS) {
+                        Text("DNS over HTTPS").tag(false)
+                        Text("DNS over TLS").tag(true)
+                    }
+                    if vpn.useDNSOverTLS {
+                        TextField("DoT 证书域名", text: $vpn.encryptedDNSTLSName)
                             .cuvenPlainInput()
                             .keyboardType(.URL)
-                    }
-                } footer: {
-                    Text("使用支持 HTTP/3 的 Cuven 中继。服务器端口需与中继一致，证书需受 iOS 信任。")
-                }
-                .disabled(!vpn.canEdit)
-            }
-
-            Section {
-                if vpn.highSecurity {
-                    Toggle("自定义加密 DNS", isOn: $vpn.useEncryptedDNS)
-                    if vpn.useEncryptedDNS {
+                    } else {
                         TextField("HTTPS DNS URL", text: $vpn.encryptedDNSURL)
                             .cuvenPlainInput()
                             .keyboardType(.URL)
-                        TextField("解析器公网 IP，逗号分隔", text: $vpn.encryptedDNSBootstrap)
-                            .cuvenPlainInput()
-                    } else {
-                        LabeledContent("DNS", value: "Cloudflare HTTPS")
                     }
-                } else {
-                    Toggle("自定义 DNS", isOn: $vpn.useCustomDNS)
-                }
-                if !vpn.highSecurity && vpn.useCustomDNS {
-                    TextField("DNS 地址，逗号分隔", text: $vpn.dns)
+                    TextField("解析器公网 IP，逗号分隔", text: $vpn.encryptedDNSBootstrap)
                         .cuvenPlainInput()
-                        .accessibilityLabel("自定义 DNS 服务器地址")
+                } else {
+                    LabeledContent("DNS", value: "Cloudflare HTTPS")
                 }
             } footer: {
-                if vpn.highSecurity {
-                    Text("HTTPS DNS 经过 VPN 隧道。自定义解析器使用指定 IP 建立连接，并校验 URL 对应的证书。")
-                } else {
-                    Text("支持 IPv4 和 IPv6 DNS。关闭时使用 Cuven 的默认 DNS。启用局域网阻止时请使用公网 DNS。查询通过隧道传输。")
-                }
+                Text("加密 DNS 经过 VPN 隧道并校验解析器证书。DNS over TLS 使用 TCP 853。")
             }
             .disabled(!vpn.canEdit)
 
@@ -297,39 +227,5 @@ private extension View {
 
     func cuvenSecureInput() -> some View {
         cuvenPlainInput().textContentType(.password).privacySensitive()
-    }
-}
-
-private struct ImportView: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var uri = ""
-    let onImport: (String) -> Bool
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                TextField("hysteria2://…", text: $uri)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .privacySensitive()
-                    .accessibilityLabel("HY2 链接")
-            }
-            .navigationTitle("导入 HY2 链接")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("导入") {
-                        _ = onImport(uri)
-                        uri = ""
-                        dismiss()
-                    }
-                    .disabled(uri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-        }
     }
 }

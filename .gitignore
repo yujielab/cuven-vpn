@@ -4,6 +4,7 @@
 /DerivedData/
 /Vendor/
 /core/cuven-wg-relay
+/core/cuven-gateway
 *.xcuserstate
 *.xcarchive
 *.ipa

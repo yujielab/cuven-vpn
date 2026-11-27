@@ -5,8 +5,7 @@ enum KeychainCredential {
     private static let service = "dev.cuven.vpn.credential"
 
     static func store(_ credential: String) throws -> Data {
-        try VPNProfile.validateCredential(credential)
-        let group = accessGroup()
+        try VPNProfile.validateCredential(credential, maximumBytes: 8192)
         let account = UUID().uuidString
         var item: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -16,17 +15,28 @@ enum KeychainCredential {
             kSecValueData as String: Data(credential.utf8),
             kSecReturnPersistentRef as String: true
         ]
-        if let group { item[kSecAttrAccessGroup as String] = group }
+        let configured = TunnelConfiguration.keychainAccessGroup
+        let configuredGroup = KeychainAccessGroup.resolve(configured)
+        var group = try configuredGroup ?? accessGroupForCurrentSignature(configured)
+        item[kSecAttrAccessGroup as String] = group
         var result: CFTypeRef?
-        let status = SecItemAdd(item as CFDictionary, &result)
+        var status = SecItemAdd(item as CFDictionary, &result)
+        if status == errSecMissingEntitlement, configuredGroup != nil {
+            let current = try accessGroupForCurrentSignature(configured)
+            if current != group {
+                group = current
+                item[kSecAttrAccessGroup as String] = group
+                status = SecItemAdd(item as CFDictionary, &result)
+            }
+        }
         guard status == errSecSuccess else { throw CredentialError.keychain(status) }
         guard let reference = result as? Data else {
             var query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
-                kSecAttrAccount as String: account
+                kSecAttrAccount as String: account,
+                kSecAttrAccessGroup as String: group
             ]
-            if let group { query[kSecAttrAccessGroup as String] = group }
             SecItemDelete(query as CFDictionary)
             throw CredentialError.missing
         }
@@ -43,7 +53,7 @@ enum KeychainCredential {
         guard let data = result as? Data, let credential = String(data: data, encoding: .utf8) else {
             throw CredentialError.missing
         }
-        try VPNProfile.validateCredential(credential)
+        try VPNProfile.validateCredential(credential, maximumBytes: 8192)
         return credential
     }
 
@@ -55,9 +65,28 @@ enum KeychainCredential {
         [kSecValuePersistentRef as String: reference]
     }
 
-    private static func accessGroup() -> String? {
-        let group = TunnelConfiguration.keychainAccessGroup
-        return group.isEmpty || group.contains("$(") ? nil : group
+    private static func accessGroupForCurrentSignature(_ configured: String) throws -> String {
+        // The plist in an unsigned IPA can lack the App ID prefix. Read the
+        // default group granted by the active signature using a non-secret item.
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service + ".signing",
+            kSecAttrAccount as String: UUID().uuidString
+        ]
+        var item = query
+        item[kSecValueData as String] = Data([0])
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        item[kSecReturnAttributes as String] = true
+        var result: CFTypeRef?
+        let status = SecItemAdd(item as CFDictionary, &result)
+        guard status == errSecSuccess else { throw CredentialError.keychain(status) }
+        defer { SecItemDelete(query as CFDictionary) }
+        guard let attributes = result as? [String: Any],
+              let defaultGroup = attributes[kSecAttrAccessGroup as String] as? String,
+              let shared = KeychainAccessGroup.resolve(configured, defaultGroup: defaultGroup) else {
+            throw CredentialError.keychain(errSecMissingEntitlement)
+        }
+        return shared
     }
 }
 
@@ -69,6 +98,8 @@ enum CredentialError: LocalizedError {
         switch self {
         case .missing: "找不到连接凭据，请重新输入。"
         case .keychain(let status) where status == errSecItemNotFound: "找不到连接凭据，请重新输入。"
+        case .keychain(let status) where status == errSecMissingEntitlement:
+            "签名缺少共享钥匙串权限（-34018）。请用同一开发者团队为 Cuven 与 CuvenTunnel 签名。"
         case .keychain(let status): "无法访问连接凭据（\(status)）。"
         }
     }

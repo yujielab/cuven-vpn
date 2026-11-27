@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yujielab/cuven-vpn/core/packetpolicy"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
@@ -40,7 +41,7 @@ func destination(id stack.TransportEndpointID) netip.AddrPort {
 
 func (t *Tunnel) forwardTCP(request *tcp.ForwarderRequest) {
 	address := destination(request.ID())
-	if (t.blockLAN && IsLocalDestination(address.Addr())) || !t.beginFlow(t.tcpSlots) {
+	if (t.blockLAN && packetpolicy.IsLocalDestination(address.Addr())) || !t.beginFlow(t.tcpSlots) {
 		request.Complete(t.ctx.Err() == nil)
 		return
 	}
@@ -101,7 +102,7 @@ func copyTCP(dst, src net.Conn) error {
 
 func (t *Tunnel) forwardUDP(request *udp.ForwarderRequest) bool {
 	address := destination(request.ID())
-	if (t.blockLAN && IsLocalDestination(address.Addr())) || !t.beginFlow(t.udpSlots) {
+	if (t.blockLAN && packetpolicy.IsLocalDestination(address.Addr())) || !t.beginFlow(t.udpSlots) {
 		return false
 	}
 	session, err := t.relay.openUDP()

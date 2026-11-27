@@ -3,6 +3,7 @@ package mobile
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -72,29 +73,41 @@ func TestWriteBatchPrivacyPolicy(t *testing.T) {
 	binary.BigEndian.PutUint16(tcp[2:4], 443)
 	tcp[12] = 0x50
 	https := ipv4(6, tcp)
+	binary.BigEndian.PutUint16(tcp[2:4], 853)
+	dot := ipv4(6, tcp)
 	var batch []byte
-	for _, packet := range [][]byte{stun, quic, dns, https} {
+	for _, packet := range [][]byte{stun, quic, dns, https, dot} {
 		batch = binary.BigEndian.AppendUint16(batch, uint16(len(packet)))
 		batch = append(batch, packet...)
 	}
 
 	for _, test := range []struct {
-		name   string
-		policy packetPolicy
-		want   [][]byte
+		name         string
+		policy       packetPolicy
+		encryptedDNS bool
+		want         [][]byte
 	}{
-		{"normal", packetPolicy{}, [][]byte{stun, quic, dns, https}},
-		{"high security", packetPolicy{blockPlainDNS: true}, [][]byte{stun, quic, https}},
+		{"normal", packetPolicy{}, false, [][]byte{stun, quic, dns, https, dot}},
+		{"high security", packetPolicy{blockPlainDNS: true}, false, [][]byte{stun, quic, https, dot}},
+		{"encrypted DNS", packetPolicy{}, true, [][]byte{stun, quic, https, dot}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			engine, sink := NewEngine(), &recordingTunnel{}
 			defer engine.Stop()
-			open := func(context.Context) (packetTunnel, io.Closer, error) { return sink, nil, nil }
+			if test.encryptedDNS {
+				if err := engine.RequireEncryptedDNS(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			open := func(context.Context) (packetTunnel, error) { return sink, nil }
 			if err := engine.start(1280, test.policy, open); err != nil {
 				t.Fatal(err)
 			}
 			if err := engine.WriteBatch(batch); err != nil {
 				t.Fatal(err)
+			}
+			if err := engine.RequireEncryptedDNS(); !errors.Is(err, errEngineUsed) {
+				t.Fatalf("changing DNS policy after startup returned %v", err)
 			}
 			if !slices.EqualFunc(sink.packets, test.want, bytes.Equal) {
 				t.Fatalf("forwarded packets: got %x, want %x", sink.packets, test.want)
@@ -118,7 +131,7 @@ func TestStopBeforeStart(t *testing.T) {
 	engine := NewEngine()
 	engine.Stop()
 	engine.Stop()
-	if err := engine.Start("127.0.0.1:443", "test", "localhost", 0, 1380, false, false, false); !errors.Is(err, errEngineUsed) {
+	if err := engine.StartCuven("127.0.0.1:4433", testAccessToken(), "localhost", false, false); !errors.Is(err, errEngineUsed) {
 		t.Fatalf("Start after Stop returned %v", err)
 	}
 	if _, err := engine.ReadBatch(); !errors.Is(err, errEngineInactive) {
@@ -143,7 +156,7 @@ func TestStopCancelsStartup(t *testing.T) {
 	defer engine.Stop()
 	started := make(chan error, 1)
 	go func() {
-		started <- engine.Start(socket.LocalAddr().String(), "test", "localhost", 0, 1380, false, false, false)
+		started <- engine.StartCuven(socket.LocalAddr().String(), testAccessToken(), "localhost", false, false)
 	}()
 	var packet [2048]byte
 	if _, _, err := socket.ReadFrom(packet[:]); err != nil {
@@ -159,4 +172,8 @@ func TestStopCancelsStartup(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start did not unblock after Stop")
 	}
+}
+
+func testAccessToken() string {
+	return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
 }
