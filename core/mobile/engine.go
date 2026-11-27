@@ -73,11 +73,17 @@ func NewEngine() *Engine { return &Engine{} }
 // Start establishes the transport and initializes the IP stack. Stop may be
 // called concurrently to cancel startup. The address includes the server port.
 // The blockUDP option applies to app packets in high-security mode.
-func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, mtu int64, requirePostQuantum, blockLAN, highSecurity, blockUDP bool) error {
+// insecureSkipVerify accepts any TLS certificate; serverName is still the SNI.
+// A non-empty obfsPassword enables Salamander UDP obfuscation.
+func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, mtu int64, requirePostQuantum, blockLAN, highSecurity, blockUDP, insecureSkipVerify bool, obfsPassword string) error {
 	if receiveBytesPerSecond < 0 {
 		return errInvalidRate
 	}
 	policy := packetPolicy{filterPrivacy: highSecurity, blockUDP: blockUDP}
+	obfs := ""
+	if obfsPassword != "" {
+		obfs = "salamander"
+	}
 	return e.start(mtu, policy, func(ctx context.Context) (packetTunnel, io.Closer, error) {
 		client, err := hy2.Dial(ctx, hy2.Config{
 			Address:               address,
@@ -85,6 +91,9 @@ func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, 
 			ServerName:            serverName,
 			ReceiveBytesPerSecond: uint64(receiveBytesPerSecond),
 			RequirePostQuantum:    requirePostQuantum,
+			InsecureSkipVerify:    insecureSkipVerify,
+			Obfs:                  obfs,
+			ObfsPassword:          obfsPassword,
 		})
 		if err != nil {
 			return nil, nil, err

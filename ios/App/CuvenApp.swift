@@ -205,9 +205,19 @@ private struct NetworkSettingsView: View {
                     TextField("TLS 服务器名称（可选）", text: $vpn.serverName)
                         .cuvenPlainInput()
                         .keyboardType(.URL)
+                    Toggle("跳过证书校验", isOn: $vpn.insecure)
+                    Toggle("Salamander 混淆", isOn: $vpn.obfuscation)
+                    if vpn.obfuscation {
+                        SecureField(
+                            vpn.hasSavedObfsPassword ? "混淆密码已保存，输入以替换" : "Salamander 混淆密码",
+                            text: $vpn.obfsPassword
+                        )
+                        .cuvenSecureInput()
+                        .accessibilityLabel("Salamander 混淆密码")
+                    }
                     Toggle("要求后量子密钥交换", isOn: $vpn.requirePostQuantum)
                 } footer: {
-                    Text("启用后，HY2 只接受 TLS 1.3 的 X25519MLKEM768 混合密钥交换。服务器需要支持该算法。")
+                    Text("默认校验证书。跳过校验会接受任意 TLS 证书，连接可能被中间人查看或篡改，只在你信任该服务器时使用。Salamander 密码需与服务端一致，并和连接凭据一起保存在钥匙串。链接中的 peer 与 sni 都作为 TLS 服务器名称。启用后量子密钥交换后，HY2 只接受 TLS 1.3 的 X25519MLKEM768。")
                 }
                 .disabled(!vpn.canEdit)
             }

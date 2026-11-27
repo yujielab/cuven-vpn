@@ -95,6 +95,133 @@ func TestOfficialHysteriaInterop(t *testing.T) {
 		}
 	}
 	defer client.Close()
+	exerciseOfficialProxy(t, ctx, client)
+
+	t.Run("rejected credential", func(t *testing.T) {
+		badAuth := clientConfig
+		badAuth.Auth = "incorrect-test-credential"
+		checkUpstreamDialRejected(t, ctx, badAuth)
+	})
+	t.Run("untrusted certificate", func(t *testing.T) {
+		untrusted := clientConfig
+		untrusted.RootCAs = x509.NewCertPool()
+		checkUpstreamDialRejected(t, ctx, untrusted)
+	})
+	t.Run("required hybrid TLS", func(t *testing.T) {
+		hybrid := clientConfig
+		hybrid.RequirePostQuantum = true
+		attempt, stop := context.WithTimeout(ctx, 5*time.Second)
+		defer stop()
+		tunnel, err := hy2.Dial(attempt, hybrid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = tunnel.Close()
+	})
+}
+
+func TestOfficialHysteriaSalamanderInsecureInterop(t *testing.T) {
+	binary := os.Getenv("CUVEN_HYSTERIA_BIN")
+	if binary == "" {
+		t.Skip("set CUVEN_HYSTERIA_BIN to run against the upstream Hysteria server")
+	}
+	// ServerName is the TLS name supplied by a URI's sni or peer parameter.
+	// The socket address stays an IP, and the self-signed certificate is not trusted.
+	const serverName = "cuven-obfs.example"
+	const auth = "example-auth-token"
+	const obfsPassword = "example-obfs-pass"
+
+	dir := t.TempDir()
+	certFile, keyFile, _ := writeServerCertificate(t, dir, serverName)
+	reservation, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := reservation.LocalAddr().String()
+	if err := reservation.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	configFile := filepath.Join(dir, "server.yaml")
+	config := fmt.Sprintf("listen: %q\ntls:\n  cert: %q\n  key: %q\nauth:\n  type: password\n  password: %q\nobfs:\n  type: salamander\n  salamander:\n    password: %q\n",
+		address, certFile, keyFile, auth, obfsPassword)
+	if err := os.WriteFile(configFile, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	logFile, err := os.Create(filepath.Join(dir, "server.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logFile.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, "server", "--config", configFile, "--log-level", "debug", "--disable-update-check")
+	command.Stdout = logFile
+	command.Stderr = logFile
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() {
+		_ = command.Wait()
+		close(exited)
+	}()
+	defer func() {
+		cancel()
+		<-exited
+		if t.Failed() {
+			log, _ := os.ReadFile(logFile.Name())
+			t.Logf("official server output:\n%s", log)
+		}
+	}()
+
+	clientConfig := hy2.Config{
+		Address: address, Auth: auth, ServerName: serverName,
+		InsecureSkipVerify: true, Obfs: "salamander", ObfsPassword: obfsPassword,
+	}
+	var client *hy2.Client
+	for {
+		attempt, stop := context.WithTimeout(ctx, 300*time.Millisecond)
+		client, err = hy2.Dial(attempt, clientConfig)
+		stop()
+		if err == nil {
+			break
+		}
+		select {
+		case <-exited:
+			t.Fatalf("upstream server exited before authenticating: %v", err)
+		case <-ctx.Done():
+			t.Fatalf("upstream server did not authenticate: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	defer client.Close()
+	exerciseOfficialProxy(t, ctx, client)
+
+	t.Run("verification stays on without insecure", func(t *testing.T) {
+		verified := clientConfig
+		verified.InsecureSkipVerify = false
+		checkUpstreamDialRejected(t, ctx, verified)
+	})
+	t.Run("wrong obfuscation password", func(t *testing.T) {
+		wrong := clientConfig
+		wrong.ObfsPassword = "wrong-obfs-pass"
+		attempt, stop := context.WithTimeout(ctx, 2*time.Second)
+		defer stop()
+		rejected, err := hy2.Dial(attempt, wrong)
+		if rejected != nil {
+			_ = rejected.Close()
+			t.Fatal("wrong salamander password authenticated")
+		}
+		if err == nil {
+			t.Fatal("expected the wrong salamander password to fail")
+		}
+	})
+}
+
+func exerciseOfficialProxy(t *testing.T, ctx context.Context, client *hy2.Client) {
+	t.Helper()
 	t.Run("TCP", func(t *testing.T) {
 		local, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
@@ -172,28 +299,6 @@ func TestOfficialHysteriaInterop(t *testing.T) {
 				t.Fatalf("UDP echo differs for %d-byte packet: got %d bytes from %q", length, len(got), source)
 			}
 		}
-	})
-
-	t.Run("rejected credential", func(t *testing.T) {
-		badAuth := clientConfig
-		badAuth.Auth = "incorrect-test-credential"
-		checkUpstreamDialRejected(t, ctx, badAuth)
-	})
-	t.Run("untrusted certificate", func(t *testing.T) {
-		untrusted := clientConfig
-		untrusted.RootCAs = x509.NewCertPool()
-		checkUpstreamDialRejected(t, ctx, untrusted)
-	})
-	t.Run("required hybrid TLS", func(t *testing.T) {
-		hybrid := clientConfig
-		hybrid.RequirePostQuantum = true
-		attempt, stop := context.WithTimeout(ctx, 5*time.Second)
-		defer stop()
-		tunnel, err := hy2.Dial(attempt, hybrid)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = tunnel.Close()
 	})
 }
 

@@ -16,9 +16,9 @@ const (
 	maxAddressAttempts  = 4
 )
 
-func dialQUIC(ctx context.Context, host, port string, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
+func dialQUIC(ctx context.Context, host, port string, tlsConfig *tls.Config, config *quic.Config, obfsPassword string) (*quic.Conn, error) {
 	if _, err := netip.ParseAddr(host); err == nil {
-		return quic.DialAddr(ctx, net.JoinHostPort(host, port), tlsConfig, config)
+		return dialEndpoint(ctx, net.JoinHostPort(host, port), tlsConfig, config, obfsPassword)
 	}
 	// Resolve before allocating UDP sockets so DNS shares the connection deadline.
 	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
@@ -29,7 +29,7 @@ func dialQUIC(ctx context.Context, host, port string, tlsConfig *tls.Config, con
 		return nil, errors.New("Hysteria server has no IP addresses")
 	}
 	if len(addresses) == 1 {
-		return quic.DialAddr(ctx, net.JoinHostPort(addresses[0].String(), port), tlsConfig, config)
+		return dialEndpoint(ctx, net.JoinHostPort(addresses[0].String(), port), tlsConfig, config, obfsPassword)
 	}
 	// Prefer the system resolver's first result and stagger the other family
 	// next. A broken IPv6 or IPv4 path will cost one short delay on mobile.
@@ -42,10 +42,60 @@ func dialQUIC(ctx context.Context, host, port string, tlsConfig *tls.Config, con
 		}
 	}
 	addresses = addresses[:min(len(addresses), maxAddressAttempts)]
-	return raceQUIC(ctx, addresses, port, tlsConfig, config)
+	dial := func(ctx context.Context, endpoint string, config *quic.Config) (*quic.Conn, error) {
+		return dialEndpoint(ctx, endpoint, tlsConfig, config, obfsPassword)
+	}
+	return raceDial(ctx, addresses, port, config, dial)
+}
+
+func dialEndpoint(ctx context.Context, endpoint string, tlsConfig *tls.Config, config *quic.Config, obfsPassword string) (*quic.Conn, error) {
+	if obfsPassword == "" {
+		return quic.DialAddr(ctx, endpoint, tlsConfig, config)
+	}
+	return dialObfuscated(ctx, endpoint, tlsConfig, config, obfsPassword)
+}
+
+// dialObfuscated owns the UDP socket. quic.Dial does not close a caller-supplied
+// PacketConn, so the socket is closed when the QUIC connection ends.
+func dialObfuscated(ctx context.Context, endpoint string, tlsConfig *tls.Config, config *quic.Config, password string) (*quic.Conn, error) {
+	remote, err := net.ResolveUDPAddr("udp", endpoint)
+	if err != nil {
+		return nil, err
+	}
+	network := "udp4"
+	local := &net.UDPAddr{IP: net.IPv4zero}
+	if remote.IP.To4() == nil {
+		network = "udp6"
+		local = &net.UDPAddr{IP: net.IPv6unspecified}
+	}
+	socket, err := net.ListenUDP(network, local)
+	if err != nil {
+		return nil, err
+	}
+	wrapped, err := wrapSalamander(socket, password)
+	if err != nil {
+		_ = socket.Close()
+		return nil, err
+	}
+	conn, err := quic.Dial(ctx, wrapped, remote, tlsConfig, config)
+	if err != nil {
+		_ = socket.Close()
+		return nil, err
+	}
+	go func() {
+		<-conn.Context().Done()
+		_ = socket.Close()
+	}()
+	return conn, nil
 }
 
 func raceQUIC(ctx context.Context, addresses []netip.Addr, port string, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
+	return raceDial(ctx, addresses, port, config, func(ctx context.Context, endpoint string, config *quic.Config) (*quic.Conn, error) {
+		return quic.DialAddr(ctx, endpoint, tlsConfig, config)
+	})
+}
+
+func raceDial(ctx context.Context, addresses []netip.Addr, port string, config *quic.Config, dial func(context.Context, string, *quic.Config) (*quic.Conn, error)) (*quic.Conn, error) {
 	type result struct {
 		connection *quic.Conn
 		err        error
@@ -64,7 +114,7 @@ func raceQUIC(ctx context.Context, addresses []netip.Addr, port string, tlsConfi
 				case <-timer.C:
 				}
 			}
-			connection, err := quic.DialAddr(attempts, net.JoinHostPort(address.String(), port), tlsConfig, config.Clone())
+			connection, err := dial(attempts, net.JoinHostPort(address.String(), port), config.Clone())
 			select {
 			case results <- result{connection: connection, err: err}:
 			case <-attempts.Done():

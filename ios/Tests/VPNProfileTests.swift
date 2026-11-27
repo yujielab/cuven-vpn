@@ -9,12 +9,124 @@ final class VPNProfileTests: XCTestCase {
         XCTAssertEqual(result.profile.endpoint, "[2001:db8::1]:8443")
         XCTAssertEqual(result.profile.serverName, "edge.example.com")
         XCTAssertEqual(result.credential, "alice:pa@ss:word")
+        XCTAssertFalse(result.profile.insecure)
+        XCTAssertNil(result.profile.obfs)
+        XCTAssertNil(result.obfsPassword)
     }
 
-    func testHY2ImportRejectsUnsupportedSecuritySettings() {
-        XCTAssertThrowsError(try VPNProfile.importURI("hy2://key@edge.example.com?insecure=1"))
-        XCTAssertThrowsError(try VPNProfile.importURI("hy2://key@edge.example.com?obfs=salamander"))
-        XCTAssertThrowsError(try VPNProfile.importURI("hy2://a%0Ab@edge.example.com"))
+    func testHY2ImportAcceptsSalamanderPeerInsecureAndFragment() throws {
+        let links = [
+            "hysteria2://example-auth-token@198.51.100.1:443?peer=example.com&insecure=1&obfs=salamander&obfs-password=example-obfs-pass#Example-Server",
+            "hy2://example-auth-token@198.51.100.1:443?obfs-password=example-obfs-pass&obfs=Salamander&insecure=true&peer=example.com#Example-Server",
+        ]
+        for uri in links {
+            let result = try VPNProfile.importURI(uri)
+            XCTAssertEqual(result.profile.transport, .hy2)
+            XCTAssertEqual(result.profile.host, "198.51.100.1")
+            XCTAssertEqual(result.profile.port, 443)
+            XCTAssertEqual(result.profile.endpoint, "198.51.100.1:443")
+            XCTAssertEqual(result.profile.serverName, "example.com")
+            XCTAssertTrue(result.profile.insecure)
+            XCTAssertEqual(result.profile.obfs, "salamander")
+            XCTAssertEqual(result.credential, "example-auth-token")
+            XCTAssertEqual(result.obfsPassword, "example-obfs-pass")
+            let encoded = String(decoding: try JSONEncoder().encode(result.profile), as: UTF8.self)
+            XCTAssertFalse(encoded.contains("example-obfs-pass"))
+            XCTAssertFalse(encoded.contains("example-auth-token"))
+            XCTAssertEqual(try VPNProfile.decode(Data(encoded.utf8)), result.profile)
+        }
+    }
+
+    func testPeerIsAnAliasAndSNIWinsWhenBothArePresent() throws {
+        let peerOnly = try VPNProfile.importURI("hy2://example-auth-token@198.51.100.1?peer=peer.example.com")
+        XCTAssertEqual(peerOnly.profile.serverName, "peer.example.com")
+        XCTAssertFalse(peerOnly.profile.insecure)
+        XCTAssertNil(peerOnly.profile.obfs)
+
+        let sniOnly = try VPNProfile.importURI("hysteria2://example-auth-token@198.51.100.1:8443?sni=sni.example.com&insecure=0")
+        XCTAssertEqual(sniOnly.profile.serverName, "sni.example.com")
+        XCTAssertEqual(sniOnly.profile.port, 8443)
+        XCTAssertFalse(sniOnly.profile.insecure)
+
+        let same = try VPNProfile.importURI("hy2://example-auth-token@example.com?sni=edge.example.com&peer=edge.example.com&insecure=false")
+        XCTAssertEqual(same.profile.serverName, "edge.example.com")
+        XCTAssertFalse(same.profile.insecure)
+
+        let both = try VPNProfile.importURI("hy2://example-auth-token@198.51.100.1?peer=peer.example.com&sni=sni.example.com")
+        XCTAssertEqual(both.profile.serverName, "sni.example.com")
+
+        let encodedPassword = try VPNProfile.importURI(
+            "hy2://example-auth-token@198.51.100.1?peer=edge.example.com&insecure=1&obfs=salamander&obfs-password=example%2Dobfs%2Dpass"
+        )
+        XCTAssertEqual(encodedPassword.profile.serverName, "edge.example.com")
+        XCTAssertEqual(encodedPassword.obfsPassword, "example-obfs-pass")
+        XCTAssertTrue(encodedPassword.profile.insecure)
+    }
+
+    func testFragmentIsNotParsedAsParameters() throws {
+        let result = try VPNProfile.importURI("hy2://example-auth-token@example.com:443#Example-Server?insecure=1&obfs=salamander")
+        XCTAssertEqual(result.profile.host, "example.com")
+        XCTAssertEqual(result.credential, "example-auth-token")
+        XCTAssertFalse(result.profile.insecure)
+        XCTAssertNil(result.profile.obfs)
+        XCTAssertNil(result.obfsPassword)
+        XCTAssertNil(result.profile.serverName)
+    }
+
+    func testHY2ImportRejectsUnsupportedOrIncompleteObfuscation() {
+        XCTAssertThrowsError(try VPNProfile.importURI("hy2://example-auth-token@example.com?obfs=salamander"))
+        XCTAssertThrowsError(try VPNProfile.importURI("hy2://example-auth-token@example.com?obfs=salamander&obfs-password=no"))
+        XCTAssertThrowsError(try VPNProfile.importURI("hy2://example-auth-token@example.com?obfs=gecko&obfs-password=example-obfs-pass"))
+        XCTAssertThrowsError(try VPNProfile.importURI("hy2://example-auth-token@example.com?obfs-password=example-obfs-pass"))
+        XCTAssertThrowsError(try VPNProfile.importURI("hy2://example-auth-token@example.com?insecure=yes"))
+        XCTAssertThrowsError(try VPNProfile.importURI("hy2://example-auth-token@example.com?pinSHA256=abcd"))
+        XCTAssertThrowsError(try VPNProfile.importURI("hy2://example-auth-token@example.com?sni=edge.example.com&sni=other.example.com"))
+        XCTAssertThrowsError(try VPNProfile.importURI("hy2://a%0Ab@example.com"))
+        XCTAssertThrowsError(try VPNProfile(host: "example.com", obfs: "gecko"))
+    }
+
+    func testProfileRoundTripPreservesInsecureAndObfuscationWithoutThePassword() throws {
+        let profile = try VPNProfile(
+            host: "198.51.100.1", serverName: "example.com", insecure: true, obfs: "salamander"
+        )
+        XCTAssertTrue(profile.insecure)
+        XCTAssertEqual(profile.obfs, "salamander")
+        let encoded = try JSONEncoder().encode(profile)
+        let decoded = try VPNProfile.decode(encoded)
+        XCTAssertEqual(decoded, profile)
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("example-obfs-pass"))
+    }
+
+    func testLegacyProfileLeavesVerificationOnAndObfuscationOff() throws {
+        let profile = try VPNProfile(host: "edge.example.com")
+        XCTAssertFalse(profile.insecure)
+        XCTAssertNil(profile.obfs)
+        let encoded = try JSONEncoder().encode(profile)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        fields.removeValue(forKey: "insecure")
+        fields.removeValue(forKey: "obfs")
+        fields.removeValue(forKey: "highSecurity")
+        fields.removeValue(forKey: "blockAppUDP")
+        let decoded = try VPNProfile.decode(try JSONSerialization.data(withJSONObject: fields))
+        XCTAssertEqual(decoded, profile)
+    }
+
+    func testHysteriaCredentialKeepsObfsPasswordOutOfTheAuthSecret() throws {
+        let stored = try HysteriaCredential(
+            version: HysteriaCredential.currentVersion, auth: "example-auth-token", obfsPassword: "example-obfs-pass"
+        ).encoded()
+        let parsed = try HysteriaCredential.parseStored(stored)
+        XCTAssertEqual(parsed.auth, "example-auth-token")
+        XCTAssertEqual(parsed.obfsPassword, "example-obfs-pass")
+        XCTAssertFalse(parsed.auth.contains("example-obfs-pass"))
+
+        let legacy = try HysteriaCredential.parseStored("example-auth-token")
+        XCTAssertEqual(legacy.auth, "example-auth-token")
+        XCTAssertNil(legacy.obfsPassword)
+        XCTAssertThrowsError(try VPNProfile.validateObfsPassword("no"))
+        XCTAssertThrowsError(try HysteriaCredential(
+            version: HysteriaCredential.currentVersion, auth: "example-auth-token", obfsPassword: ""
+        ).encoded())
     }
 
     func testHighSecurityRequiresAnIPButAllowsASeparateTLSName() throws {

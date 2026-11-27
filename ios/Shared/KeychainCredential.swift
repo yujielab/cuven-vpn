@@ -5,7 +5,7 @@ enum KeychainCredential {
     private static let service = "dev.cuven.vpn.credential"
 
     static func store(_ credential: String) throws -> Data {
-        try VPNProfile.validateCredential(credential)
+        try VPNProfile.validateKeychainSecret(credential)
         let group = accessGroup()
         let account = UUID().uuidString
         var item: [String: Any] = [
@@ -43,7 +43,7 @@ enum KeychainCredential {
         guard let data = result as? Data, let credential = String(data: data, encoding: .utf8) else {
             throw CredentialError.missing
         }
-        try VPNProfile.validateCredential(credential)
+        try VPNProfile.validateKeychainSecret(credential)
         return credential
     }
 

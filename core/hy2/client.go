@@ -31,6 +31,10 @@ const (
 
 // Config separates the UDP endpoint from the TLS server identity. A nil RootCAs
 // uses the platform trust store. A zero receive rate asks for congestion control.
+// Certificate verification stays on unless InsecureSkipVerify is set. ServerName
+// is still sent as SNI in that case, including when Address is an IP.
+// Obfs is empty or "salamander". A salamander password is required and is at
+// least 4 bytes; it is the pre-shared key for the UDP obfuscation layer.
 type Config struct {
 	Address               string
 	Auth                  string
@@ -38,6 +42,9 @@ type Config struct {
 	RootCAs               *x509.CertPool
 	ReceiveBytesPerSecond uint64
 	RequirePostQuantum    bool
+	InsecureSkipVerify    bool
+	Obfs                  string
+	ObfsPassword          string
 }
 
 // Client owns one authenticated QUIC connection for all streams and sessions.
@@ -64,6 +71,9 @@ func Dial(ctx context.Context, config Config) (*Client, error) {
 			return nil, errors.New("Hysteria authentication contains an invalid header character")
 		}
 	}
+	if err := validateObfs(config.Obfs, config.ObfsPassword); err != nil {
+		return nil, err
+	}
 	host, port, _ := net.SplitHostPort(config.Address)
 	if config.ServerName == "" {
 		config.ServerName = host
@@ -74,10 +84,11 @@ func Dial(ctx context.Context, config Config) (*Client, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, handshakeBudget)
 	defer cancel()
 	tlsConfig := &tls.Config{
-		ServerName: config.ServerName,
-		RootCAs:    config.RootCAs,
-		NextProtos: []string{http3.NextProtoH3},
-		MinVersion: tls.VersionTLS13,
+		ServerName:         config.ServerName,
+		RootCAs:            config.RootCAs,
+		NextProtos:         []string{http3.NextProtoH3},
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: config.InsecureSkipVerify,
 	}
 	if config.RequirePostQuantum {
 		tlsConfig.CurvePreferences = []tls.CurveID{tls.X25519MLKEM768}
@@ -92,7 +103,7 @@ func Dial(ctx context.Context, config Config) (*Client, error) {
 		MaxConnectionReceiveWindow:     8 << 20,
 		MaxIdleTimeout:                 60 * time.Second,
 		KeepAlivePeriod:                25 * time.Second,
-	})
+	}, config.ObfsPassword)
 	if err != nil {
 		return nil, fmt.Errorf("connect QUIC: %w", err)
 	}
@@ -208,6 +219,23 @@ func (c *tcpConnection) Close() error {
 		c.Stream.CancelWrite(0)
 	}
 	return nil
+}
+
+func validateObfs(kind, password string) error {
+	switch kind {
+	case "":
+		if password != "" {
+			return errors.New("Hysteria obfuscation password requires obfs=salamander")
+		}
+		return nil
+	case "salamander":
+		if len(password) < salamanderMinPassword {
+			return errSalamanderPassword
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported Hysteria obfuscation %q", kind)
+	}
 }
 
 func validateAddress(address string) error {

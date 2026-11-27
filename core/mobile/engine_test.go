@@ -119,7 +119,7 @@ func TestStopBeforeStart(t *testing.T) {
 	engine := NewEngine()
 	engine.Stop()
 	engine.Stop()
-	if err := engine.Start("127.0.0.1:443", "test", "localhost", 0, 1380, false, false, false, false); !errors.Is(err, errEngineUsed) {
+	if err := engine.Start("127.0.0.1:443", "test", "localhost", 0, 1380, false, false, false, false, false, ""); !errors.Is(err, errEngineUsed) {
 		t.Fatalf("Start after Stop returned %v", err)
 	}
 	if _, err := engine.ReadBatch(); !errors.Is(err, errEngineInactive) {
@@ -144,7 +144,7 @@ func TestStopCancelsStartup(t *testing.T) {
 	defer engine.Stop()
 	started := make(chan error, 1)
 	go func() {
-		started <- engine.Start(socket.LocalAddr().String(), "test", "localhost", 0, 1380, false, false, false, false)
+		started <- engine.Start(socket.LocalAddr().String(), "test", "localhost", 0, 1380, false, false, false, false, false, "")
 	}()
 	var packet [2048]byte
 	if _, _, err := socket.ReadFrom(packet[:]); err != nil {

@@ -142,7 +142,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let connected: Bool
             do {
                 switch connection.auth {
-                case .hy2(let password):
+                case .hy2(let password, let obfsPassword):
                     try engine.start(
                         endpoint,
                         auth: password,
@@ -152,7 +152,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         requirePostQuantum: connection.profile.requirePostQuantum,
                         blockLAN: blockLAN,
                         highSecurity: connection.profile.highSecurity,
-                        blockUDP: connection.profile.blockAppUDP
+                        blockUDP: connection.profile.blockAppUDP,
+                        insecureSkipVerify: connection.profile.insecure,
+                        obfsPassword: obfsPassword ?? ""
                     )
                 case .wireGuard(let keys, let peerPublicKey):
                     try engine.startWireGuard(
@@ -391,7 +393,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
 private struct ConnectionProfile {
     enum Authentication {
-        case hy2(String)
+        case hy2(String, obfsPassword: String?)
         case wireGuard(WireGuardCredential, peerPublicKey: String)
     }
 
@@ -404,7 +406,13 @@ private struct ConnectionProfile {
         self.profile = profile
         switch profile.transport {
         case .hy2:
-            auth = .hy2(secret)
+            let stored = try HysteriaCredential.parseStored(secret)
+            if profile.obfs == "salamander" {
+                guard let password = stored.obfsPassword else { throw TunnelFailure.configuration }
+                auth = .hy2(stored.auth, obfsPassword: password)
+            } else {
+                auth = .hy2(stored.auth, obfsPassword: nil)
+            }
         case .cuvenWG:
             guard let wireGuard = profile.wireGuard, let keys = try? WireGuardCredential.decode(secret) else {
                 throw TunnelFailure.configuration
