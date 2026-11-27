@@ -118,12 +118,23 @@ jobs:
         timeout-minutes: 3
         run: xcrun simctl terminate "$SIMULATOR_ID" dev.cuven.vpn
       - name: Run unit and layout tests on the booted device
+        id: simulator_tests
         timeout-minutes: 12
         run: |
           xcodebuild -project Cuven.xcodeproj -scheme Cuven -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath DerivedData \
             -resultBundlePath "$RUNNER_TEMP/CuvenSimulator.xcresult" \
             -parallel-testing-enabled NO -quiet test-without-building
+      - name: Show failed simulator assertions
+        if: failure() && steps.simulator_tests.outcome == 'failure'
+        run: |
+          result="$RUNNER_TEMP/CuvenSimulator.xcresult"
+          if [[ -d "$result" ]]; then
+            xcrun xcresulttool get test-results summary --path "$result" |
+              python3 -c 'import json, sys
+          for failure in json.load(sys.stdin).get("testFailures", []):
+              print(failure.get("testName", ""), failure.get("failureText", ""))'
+          fi
       - name: Read unit and rotation test results
         run: |
           python3 - <<'PYTHON'

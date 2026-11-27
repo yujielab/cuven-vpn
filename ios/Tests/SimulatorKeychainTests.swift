@@ -9,10 +9,10 @@ final class SimulatorKeychainTests: XCTestCase {
         let service = "dev.cuven.vpn.credential"
         try withItem(service: service, account: UUID().uuidString) { selected in
             try withItem(service: service, account: UUID().uuidString) { retained in
-                XCTAssertEqual(try KeychainCredential.load(reference: selected), "fixture")
+                XCTAssertEqual(try KeychainCredential.load(reference: selected), "fixture", "Read the selected credential")
                 KeychainCredential.remove(reference: selected)
-                XCTAssertEqual(itemStatus(selected), errSecItemNotFound)
-                XCTAssertEqual(try KeychainCredential.load(reference: retained), "fixture")
+                XCTAssertEqual(itemStatus(selected), errSecItemNotFound, "Retired the selected credential")
+                XCTAssertEqual(try KeychainCredential.load(reference: retained), "fixture", "Read the second credential after retirement")
             }
         }
     }

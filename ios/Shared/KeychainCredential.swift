@@ -77,7 +77,7 @@ enum KeychainCredential {
         // Saved VPN preferences can outlive the item that Cuven originally wrote.
         // Check the credential namespace before requesting a value or deleting it.
         guard !reference.isEmpty else { throw CredentialError.missing }
-        var query: [String: Any] = [kSecValuePersistentRef as String: reference]
+        let query: [String: Any] = [kSecValuePersistentRef as String: reference]
         var lookup = query
         lookup[kSecReturnAttributes as String] = true
         var result: CFTypeRef?
@@ -87,9 +87,6 @@ enum KeychainCredential {
               attributes[kSecAttrService as String] as? String == service,
               let account = attributes[kSecAttrAccount as String] as? String,
               UUID(uuidString: account) != nil else { throw CredentialError.missing }
-        query[kSecClass as String] = kSecClassGenericPassword
-        query[kSecAttrService as String] = service
-        query[kSecAttrAccount as String] = account
         return query
     }
 
