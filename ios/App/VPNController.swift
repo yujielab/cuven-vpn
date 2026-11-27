@@ -32,6 +32,7 @@ final class VPNController: ObservableObject {
     private var savedProfile: VPNProfile?
     private var credentialReference: Data?
     private var connectionRequested = false
+    private var pendingDisconnectReport: UUID?
 
     var canEdit: Bool {
         loaded && !busy && (status == .invalid || status == .disconnected)
@@ -103,16 +104,37 @@ final class VPNController: ObservableObject {
         status = next
         if next != .connected { tunnelRTT = nil }
         switch next {
+        case .connecting, .reasserting:
+            pendingDisconnectReport = nil
+            connectionRequested = true
         case .connected:
+            pendingDisconnectReport = nil
             connectionRequested = true
             error = nil
         case .disconnected, .invalid:
             if connectionRequested && previous != next {
                 connectionRequested = false
-                error = "VPN 连接已中断。请检查服务器、凭据和 TLS 设置。"
+                showDisconnectReason()
             }
         default:
             break
+        }
+    }
+
+    private func showDisconnectReason() {
+        error = "VPN 连接已中断。"
+        guard let connection = manager?.connection else { return }
+        let report = UUID()
+        pendingDisconnectReport = report
+        connection.fetchLastDisconnectError { [weak self, weak connection] cause in
+            let message = cause.flatMap { DisconnectDiagnostic.message(for: $0 as NSError) }
+            Task { @MainActor in
+                guard let self, let connection, self.pendingDisconnectReport == report,
+                      self.manager?.connection === connection,
+                      self.status == .disconnected || self.status == .invalid else { return }
+                self.pendingDisconnectReport = nil
+                if let message { self.error = message }
+            }
         }
     }
 
@@ -130,6 +152,7 @@ final class VPNController: ObservableObject {
     func save(connect: Bool, once: Bool = false) async {
         guard canStart, let manager, !once || (connect && canStartOnce) else { return }
         busy = true
+        pendingDisconnectReport = nil
         error = nil
         defer { busy = false }
         do {

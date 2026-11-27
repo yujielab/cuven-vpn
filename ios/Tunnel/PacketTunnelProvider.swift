@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import NetworkExtension
+import Security
 import CuvenCore
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -75,10 +76,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let reference = configuration.passwordReference ?? values[TunnelConfiguration.credentialKey] as? Data
         let sessionID = values[AppCredentialHandoff.sessionIDKey] as? Data
         if values[AppCredentialHandoff.modeKey] as? Bool == true {
-            token = try AppCredentialHandoff.token(options: options, storedReference: reference, sessionID: sessionID, autoConnect: profile.autoConnect)
+            do {
+                token = try AppCredentialHandoff.token(options: options, storedReference: reference, sessionID: sessionID, autoConnect: profile.autoConnect)
+            } catch {
+                throw TunnelFailure.manualCredential
+            }
         } else {
             guard let reference, sessionID == nil else { throw TunnelFailure.configuration }
-            token = try KeychainCredential.load(reference: reference)
+            do {
+                token = try KeychainCredential.load(reference: reference)
+            } catch CredentialError.keychain(errSecMissingEntitlement) {
+                throw TunnelFailure.credentialEntitlement
+            } catch CredentialError.keychain(errSecItemNotFound), CredentialError.missing {
+                throw TunnelFailure.credentialUnavailable
+            }
         }
         let connection = try ConnectionProfile(profile: profile, token: token)
         let session = Session(connection: connection, completion: completionHandler)
@@ -433,27 +444,5 @@ private final class Session {
         pendingRetry?.cancel()
         monitor = nil
         pendingRetry = nil
-    }
-}
-
-private enum TunnelFailure: Int, LocalizedError, CustomNSError {
-    case configuration = 1, resolution, connection, settings, disconnected, packetFormat, cancelled
-    case strictRouting
-
-    static let errorDomain = "dev.cuven.vpn.tunnel"
-    var errorCode: Int { rawValue }
-    var errorUserInfo: [String: Any] { [NSLocalizedDescriptionKey: errorDescription ?? "隧道错误。"] }
-
-    var errorDescription: String? {
-        switch self {
-        case .configuration: "VPN 配置无效，请在 Cuven 中重新保存。"
-        case .resolution: "无法解析 VPN 服务器地址。"
-        case .connection: "无法连接 VPN 服务器，请检查地址、凭据和服务端配置。"
-        case .settings: "无法应用系统 VPN 路由或 DNS 设置。"
-        case .disconnected: "VPN 连接已断开，且无法恢复。"
-        case .packetFormat: "隧道核心返回了无效的数据包。"
-        case .cancelled: "VPN 连接已取消。"
-        case .strictRouting: "系统 VPN 全流量路由配置不完整，请在 Cuven 中重新保存。"
-        }
     }
 }
