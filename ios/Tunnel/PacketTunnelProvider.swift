@@ -102,7 +102,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func resolve(_ session: Session) {
         let profile = session.current.profile
         if profile.highSecurity {
-            session.endpoints = [profile.endpoint]
+            session.endpoints.replace(with: [profile.endpoint])
             connect(session)
             return
         }
@@ -114,8 +114,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     self.terminate(session, failure: .resolution)
                     return
                 }
-                session.endpoints = Array(resolved.prefix(3))
+                session.endpoints.replace(with: resolved)
                 self.connect(session)
+            }
+        }
+    }
+
+    private func refreshReconnectEndpoints(_ session: Session) {
+        let profile = session.current.profile
+        guard session.routesInstalled, session.path?.available != false,
+              !profile.highSecurity, !VPNProfile.isIP(profile.host),
+              let lookup = session.endpoints.beginRefresh() else { return }
+        worker.async {
+            let fresh = TunnelEndpoint.resolve(host: profile.host, port: profile.port)
+            self.state.async {
+                guard self.session === session else { return }
+                session.endpoints.finishRefresh(lookup, with: session.ready ? [] : fresh)
             }
         }
     }
@@ -126,10 +140,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             terminate(session, failure: .connection)
             return
         }
-        let endpoint = session.endpoints[session.nextEndpoint % session.endpoints.count]
-        session.nextEndpoint += 1
+        guard let endpoint = session.endpoints.next() else {
+            connectionFailed(session, failure: .resolution)
+            return
+        }
         session.engine = engine
-        if !session.routesInstalled && session.nextEndpoint < session.endpoints.count {
+        if !session.routesInstalled && session.endpoints.hasUntriedAddress {
             let deadline = DispatchWorkItem { [weak self, weak session, weak engine] in
                 guard let self, let session, let engine, self.session === session, session.engine === engine else {
                     return
@@ -161,11 +177,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 guard self.session === session, session.engine === engine else { return }
                 session.clearAttemptDeadline()
                 if let failure {
+                    if failure == .gatewayTimeout || failure == .connection {
+                        self.refreshReconnectEndpoints(session)
+                    }
                     self.connectionFailed(session, failure: failure)
                     return
                 }
                 // Reuse the address that worked, and alternate addresses if reconnect fails.
-                session.nextEndpoint -= 1
+                session.endpoints.prefer(endpoint)
                 let mtu = Int(engine.packetMTU())
                 guard mtu == TunnelConfiguration.legacyMTU || mtu == TunnelConfiguration.maximumMTU else {
                     self.connectionFailed(session, failure: .settings)
@@ -303,7 +322,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let engine = session.takeEngine()
         worker.async { engine?.stop() }
         if !session.routesInstalled {
-            if session.nextEndpoint < session.endpoints.count {
+            if session.endpoints.hasUntriedAddress {
                 connect(session)
             } else {
                 terminate(session, failure: failure)
@@ -349,6 +368,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             session.reconnectAttempts = 0
         }
 
+        session.endpoints.pathChanged()
         session.pendingRetry?.cancel()
         session.pendingRetry = nil
         if session.engine != nil {
@@ -414,8 +434,7 @@ private final class Session {
     let current: ConnectionProfile
     private var completion: ((Error?) -> Void)?
     var engine: MobileEngine?
-    var endpoints: [String] = []
-    var nextEndpoint = 0
+    var endpoints = GatewayEndpoints()
     var installedMTU: Int?
     var routesInstalled: Bool { installedMTU != nil }
     var ready = false

@@ -42,7 +42,7 @@ sudo journalctl -u cuven-gateway -n 50
 
 ## 路由和 DNS
 
-Cuven IP 在 iOS 中安装 IPv4、IPv6 默认路由，使用全流量策略。IPv4 单栈部署会捕获并丢弃 IPv6 包。系统保留 DHCP、网络门户等例外。接入网关使用域名时，连接前可能需要由系统解析该域名。配置数值 IP 和对应的证书域名可避免启动时的网关域名查询。 [Apple VPN 路由文档](https://developer.apple.com/documentation/networkextension/routing-your-vpn-network-traffic)
+Cuven IP 在 iOS 中安装 IPv4、IPv6 默认路由，使用全流量策略。IPv4 单栈部署会捕获并丢弃 IPv6 包。系统保留 DHCP、网络门户等例外。接入网关使用域名时，iOS 可在首次连接前解析该域名。已连接的设备切换网络后，若缓存地址连接失败，Cuven 会在保留路由的同时再次请求系统解析网关域名。同一路径上两次重查至少间隔一分钟。设备使用数值 IP 和对应的证书域名时，重连会沿用配置的地址。 [Apple VPN 路由文档](https://developer.apple.com/documentation/networkextension/routing-your-vpn-network-traffic)
 
 隧道默认使用 DoH。可以在「连接设置」配置自有 DoH 或 DoT 和解析器的公网 IP。Packet Tunnel 拦截隧道里的明文 DNS 和 LLMNR。应用的 TLS、HTTP 和 WebRTC 流量按 IP 包原样通过，网关只执行转发与地址转换。
 
