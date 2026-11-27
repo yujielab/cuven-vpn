@@ -41,7 +41,7 @@ private struct ConnectionView: View {
                                 .textSelection(.enabled)
                         }
                         if let rtt = vpn.tunnelRTT {
-                            Text("到网关 \(rtt) ms")
+                            Text(rtt == 0 ? "到网关不足 1 ms" : "到网关 \(rtt) ms")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }

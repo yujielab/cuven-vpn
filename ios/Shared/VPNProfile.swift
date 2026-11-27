@@ -417,7 +417,7 @@ enum ProfileError: LocalizedError {
         case .uri: "请输入有效的 hysteria2:// 或 hy2:// 链接。"
         case .unsupportedURI: "此 HY2 链接包含不支持的参数或参数值。"
         case .credential: "请输入有效的连接凭据。"
-        case .numericSecurityEndpoint: "高安全模式需要填写服务器 IPv4 或 IPv6 地址。HY2 的证书域名可以填在 TLS 设置。"
+        case .numericSecurityEndpoint: "请在「服务器地址」填写网关的 IPv4 或 IPv6 地址。高安全模式下，网关证书的域名可填在「TLS 证书域名」。"
         case .encryptedDNS: "请填写 DoH 的完整 HTTPS URL 或 DoT 的证书域名，以及一到四个解析器 IP。"
         case .wireGuard: "请检查 WireGuard 密钥和隧道地址。密钥应为 Base64 编码的 32 字节，隧道地址需包含前缀长度。"
         case .insecureSecurityMode: "高安全模式和严格后量子模式需要验证服务器证书。"

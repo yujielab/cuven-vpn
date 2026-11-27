@@ -20,7 +20,8 @@ final class VPNController: ObservableObject {
     @Published var encryptedDNSBootstrap = ""
     @Published private(set) var autoConnectPaused = false
     @Published private(set) var offersOneTimeStart = false
-    @Published private(set) var requiresAppStart = false
+    @Published private var stored: SavedTunnelProfile?
+    var requiresAppStart: Bool { stored?.requiresAppStart ?? false }
     private enum SavedCredential { case absent, available, awaitingUnlock }
     @Published private var savedCredential = SavedCredential.absent
     var hasCredential: Bool { savedCredential == .available }
@@ -33,8 +34,8 @@ final class VPNController: ObservableObject {
     @Published private(set) var error: String?
 
     private var manager: NETunnelProviderManager?
-    private var savedProfile: VPNProfile?
-    private var credentialReference: Data?
+    private var savedProfile: VPNProfile? { stored?.profile }
+    private var credentialReference: Data? { stored?.reference }
     private var connectionRequested = false
     private var stoppingByUser = false
     private var pendingDisconnectReport: UUID?
@@ -71,38 +72,78 @@ final class VPNController: ObservableObject {
         busy = true
         defer { busy = false }
         do {
-            let providerID = try Self.embeddedProviderID()
-            let managers = try await NETunnelProviderManager.loadAllFromPreferences()
-            let existing = managers.first {
-                ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier
-                    == providerID
-            }
-            manager = existing ?? NETunnelProviderManager()
-            if let configuration = existing?.protocolConfiguration as? NETunnelProviderProtocol,
-               let data = configuration.providerConfiguration?[TunnelConfiguration.profileKey] as? Data,
-               let profile = try? VPNProfile.decode(data) {
-                savedProfile = profile
-                if profile.transport == .cuven {
-                    requiresAppStart = configuration.providerConfiguration?[AppCredentialHandoff.modeKey] as? Bool == true
-                    offersOneTimeStart = configuration.providerConfiguration?[AppCredentialHandoff.sessionIDKey] is Data
-                    credentialReference = Self.credentialReference(in: configuration)
-                    apply(profile)
-                    refreshCredential()
-                    autoConnectPaused = profile.autoConnect != .off && existing?.isOnDemandEnabled == false
-                } else {
-                    if let existing, existing.isOnDemandEnabled {
-                        existing.isOnDemandEnabled = false
-                        try await existing.saveToPreferences()
-                        preferencesNeedReload = true
-                    }
-                    error = "请填写 Cuven IP 网关和新的接入令牌。"
-                }
-            }
-            loaded = true
-            refreshStatus()
+            _ = try await readSystemConfiguration()
         } catch {
             self.error = "无法读取系统 VPN 配置。\(error.localizedDescription)"
         }
+    }
+
+    /// Returns whether the saved configuration still matches the form's base.
+    /// Only an unchanged base can keep an unsubmitted token and draft together.
+    private func readSystemConfiguration() async throws -> Bool {
+        let providerID = try Self.embeddedProviderID()
+        let previousHadConfiguration = manager?.protocolConfiguration != nil
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        let existing = managers.first {
+            ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == providerID
+        }
+        let configuration = existing?.protocolConfiguration as? NETunnelProviderProtocol
+        let current = configuration.flatMap(SavedTunnelProfile.init(configuration:))
+        let profile = current?.profile
+        let keepDraft = manager != nil && stored == current && previousHadConfiguration == (existing != nil) &&
+            (existing == nil || profile?.transport == .cuven)
+
+        if let existing, let profile, profile.transport != .cuven && existing.isOnDemandEnabled {
+            existing.isOnDemandEnabled = false
+            do {
+                try await existing.saveToPreferences()
+            } catch {
+                existing.isOnDemandEnabled = true
+                throw error
+            }
+            preferencesNeedReload = true
+        } else {
+            preferencesNeedReload = false
+        }
+        error = nil
+        pendingDisconnectReport = nil
+        stoppingByUser = false
+        connectionRequested = false
+        manager = existing ?? NETunnelProviderManager()
+        stored = current
+        offersOneTimeStart = current?.sessionID != nil || (keepDraft && offersOneTimeStart)
+        autoConnectPaused = false
+        if !keepDraft {
+            credential = ""
+            apply(profile?.transport == .cuven ? profile : nil)
+        }
+        if let profile {
+            if profile.transport == .cuven {
+                autoConnectPaused = profile.autoConnect != .off && existing?.isOnDemandEnabled == false
+            } else {
+                error = "请填写 Cuven IP 网关和新的接入令牌。"
+            }
+        }
+        refreshCredential()
+        loaded = true
+        refreshStatus()
+        return keepDraft
+    }
+
+    private func recoverPreferenceConflict(_ cause: Error) async -> Bool {
+        let failure = cause as NSError
+        guard failure.domain == NEVPNErrorDomain, failure.code == NEVPNError.configurationStale.rawValue else {
+            return false
+        }
+        loaded = false
+        do {
+            let kept = try await readSystemConfiguration()
+            error = kept ? "已重新读取系统 VPN 配置，当前输入已保留。请重试。"
+                : "系统 VPN 配置已更改，请核对重新读取的网关和连接设置。"
+        } catch {
+            self.error = "系统 VPN 配置已更改。重新读取失败。\(error.localizedDescription)"
+        }
+        return true
     }
 
     func refreshStatus() {
@@ -187,9 +228,9 @@ final class VPNController: ObservableObject {
                     let options: [String: NSObject]
                     if let sessionToken,
                        let id = configuration.providerConfiguration?[AppCredentialHandoff.sessionIDKey] as? Data,
-                       Self.credentialReference(in: configuration) == nil {
+                       SavedTunnelProfile.credentialReference(in: configuration) == nil {
                         options = try AppCredentialHandoff.options(token: sessionToken, reference: id)
-                    } else if !once, let reference = credentialReference, reference == Self.credentialReference(in: configuration) {
+                    } else if !once, let reference = credentialReference, reference == SavedTunnelProfile.credentialReference(in: configuration) {
                         let token = try KeychainCredential.load(reference: reference)
                         options = try AppCredentialHandoff.options(token: token, reference: reference)
                     } else {
@@ -211,6 +252,7 @@ final class VPNController: ObservableObject {
         } catch {
             refreshStatus()
             pendingDisconnectReport = nil
+            if await recoverPreferenceConflict(error) { return }
             if let failure = error as? CredentialError {
                 switch failure {
                 case .appKeychain(errSecMissingEntitlement), .unexpectedDefaultGroup: offersOneTimeStart = true
@@ -234,6 +276,7 @@ final class VPNController: ObservableObject {
                 autoConnectPaused = true
             } catch {
                 manager.isOnDemandEnabled = true
+                if await recoverPreferenceConflict(error) { return }
                 self.error = "无法暂停自动连接。\(error.localizedDescription)"
                 return
             }
@@ -330,9 +373,7 @@ final class VPNController: ObservableObject {
         }
         if !once { credential = "" }
         offersOneTimeStart = once
-        credentialReference = reference
-        requiresAppStart = appStart
-        savedProfile = profile
+        stored = SavedTunnelProfile(profile: profile, configuration: configuration)
         autoConnectPaused = false
         apply(profile)
         refreshCredential()
@@ -345,6 +386,11 @@ final class VPNController: ObservableObject {
     private func reloadPreferencesIfNeeded(_ manager: NETunnelProviderManager) async throws {
         guard preferencesNeedReload else { return }
         try await manager.loadFromPreferences()
+        let configuration = manager.protocolConfiguration as? NETunnelProviderProtocol
+        guard let configuration, configuration.providerBundleIdentifier == (try Self.embeddedProviderID()),
+              SavedTunnelProfile(configuration: configuration) == stored else {
+            throw NSError(domain: NEVPNErrorDomain, code: NEVPNError.configurationStale.rawValue)
+        }
         preferencesNeedReload = false
     }
 
@@ -370,11 +416,6 @@ final class VPNController: ObservableObject {
               settings["NSExtensionPointIdentifier"] as? String == "com.apple.networkextension.packet-tunnel"
         else { throw CredentialError.providerMissing }
         return identifier
-    }
-
-    private static func credentialReference(in configuration: NETunnelProviderProtocol) -> Data? {
-        configuration.passwordReference
-            ?? configuration.providerConfiguration?[TunnelConfiguration.credentialKey] as? Data
     }
 
     private func draftProfile() throws -> VPNProfile {
@@ -426,18 +467,19 @@ final class VPNController: ObservableObject {
         text.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init)
     }
 
-    private func apply(_ profile: VPNProfile) {
-        enableIPv6 = profile.cuvenIPv6
-        host = profile.host
-        port = String(profile.port)
-        serverName = profile.serverName ?? ""
-        autoConnect = profile.autoConnect
-        blockLAN = profile.blockLAN
-        highSecurity = profile.highSecurity
-        useEncryptedDNS = profile.encryptedDNS != nil
-        useDNSOverTLS = profile.encryptedDNS?.tlsServerName != nil
-        encryptedDNSURL = profile.encryptedDNS?.url?.absoluteString ?? ""
-        encryptedDNSTLSName = profile.encryptedDNS?.tlsServerName ?? ""
-        encryptedDNSBootstrap = profile.encryptedDNS?.bootstrapServers.joined(separator: ", ") ?? ""
+    private func apply(_ profile: VPNProfile?) {
+        enableIPv6 = profile?.cuvenIPv6 ?? false
+        host = profile?.host ?? ""
+        port = String(profile?.port ?? VPNTransport.cuven.defaultPort)
+        serverName = profile?.serverName ?? ""
+        autoConnect = profile?.autoConnect ?? .off
+        blockLAN = profile?.blockLAN ?? false
+        highSecurity = profile?.highSecurity ?? false
+        let dns = profile?.encryptedDNS
+        useEncryptedDNS = dns != nil
+        useDNSOverTLS = dns?.tlsServerName != nil
+        encryptedDNSURL = dns?.url?.absoluteString ?? ""
+        encryptedDNSTLSName = dns?.tlsServerName ?? ""
+        encryptedDNSBootstrap = dns?.bootstrapServers.joined(separator: ", ") ?? ""
     }
 }

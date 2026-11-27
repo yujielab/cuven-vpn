@@ -6,8 +6,8 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 stage=$(mktemp -d)
 trap 'rm -rf -- "$stage"' EXIT
 mkdir -p "$stage/Sources/Cuven" "$stage/Tests/CuvenTests"
-cp "$repo"/ios/Shared/*.swift "$repo"/ios/App/{DisconnectDiagnostic,TunnelRTTMeasurement}.swift "$stage/Sources/Cuven/"
-cp "$repo"/ios/Tests/{VPNProfileTests,DisconnectDiagnosticTests,TunnelRTTMeasurementTests,GatewayEndpointsTests}.swift "$stage/Tests/CuvenTests/"
+cp "$repo"/ios/Shared/*.swift "$repo"/ios/App/{DisconnectDiagnostic,TunnelRTTMeasurement,SavedTunnelProfile}.swift "$stage/Sources/Cuven/"
+cp "$repo"/ios/Tests/{VPNProfileTests,DisconnectDiagnosticTests,TunnelRTTMeasurementTests,GatewayEndpointsTests,SavedTunnelProfileTests}.swift "$stage/Tests/CuvenTests/"
 cat >"$stage/Package.swift" <<'SWIFT'
 // swift-tools-version: 5.9
 import PackageDescription

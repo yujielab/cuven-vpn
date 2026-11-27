@@ -127,9 +127,11 @@ final class VPNProfileTests: XCTestCase {
     }
 
     func testHighSecurityRequiresAnIPButAllowsASeparateTLSName() throws {
-        XCTAssertThrowsError(try VPNProfile(host: "edge.example.com", highSecurity: true))
+        XCTAssertThrowsError(try VPNProfile(host: "edge.example.com", transport: .cuven, highSecurity: true)) {
+            XCTAssertTrue($0.localizedDescription.contains("TLS 证书域名"))
+        }
         let profile = try VPNProfile(
-            host: "2001:db8::1", serverName: "edge.example.com", highSecurity: true
+            host: "2001:db8::1", transport: .cuven, serverName: "edge.example.com", highSecurity: true
         )
         let decoded = try VPNProfile.decode(JSONEncoder().encode(profile))
         XCTAssertTrue(decoded.highSecurity)
