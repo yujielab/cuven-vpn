@@ -67,16 +67,18 @@ type Session struct {
 
 func quicConfig() *quic.Config {
 	return &quic.Config{
-		// Start at QUIC's minimum UDP payload so both directions can complete
-		// the handshake across a 1280-byte IPv6 or translated path. QUIC
-		// probes for larger datagrams once the connection is established.
-		InitialPacketSize:     1200,
-		EnableDatagrams:       true,
-		HandshakeIdleTimeout:  authTimeout,
-		MaxIdleTimeout:        45 * time.Second,
-		KeepAlivePeriod:       15 * time.Second,
-		MaxIncomingStreams:    1,
-		MaxIncomingUniStreams: -1,
+		// A mobile path can shrink to IPv6's minimum MTU without a change
+		// of addresses or a usable ICMP signal through NAT64. quic-go
+		// retains its probed size on that path. Keep outer datagrams within
+		// the QUIC minimum in both directions for the entire session.
+		InitialPacketSize:       1200,
+		DisablePathMTUDiscovery: true,
+		EnableDatagrams:         true,
+		HandshakeIdleTimeout:    authTimeout,
+		MaxIdleTimeout:          45 * time.Second,
+		KeepAlivePeriod:         15 * time.Second,
+		MaxIncomingStreams:      1,
+		MaxIncomingUniStreams:   -1,
 	}
 }
 

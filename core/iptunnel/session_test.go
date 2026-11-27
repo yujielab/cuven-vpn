@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http/httptest"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -194,6 +195,8 @@ func TestSessionOverMinimumIPv6Path(t *testing.T) {
 	defer hop.Close()
 	remote := gateway.Addr().(*net.UDPAddr).AddrPort()
 	remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
+	var pathMTU atomic.Int32
+	pathMTU.Store(1280)
 	go func() {
 		var packet [4096]byte
 		var client netip.AddrPort
@@ -202,7 +205,7 @@ func TestSessionOverMinimumIPv6Path(t *testing.T) {
 			if err != nil {
 				return
 			}
-			if n > 1280-40-8 {
+			if n > int(pathMTU.Load())-40-8 {
 				continue
 			}
 			destination := remote
@@ -221,36 +224,50 @@ func TestSessionOverMinimumIPv6Path(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
 	defer cancel()
 	token := Token{1}
-	server := make(chan error, 1)
-	payload := testPacket6(MTU)
+	type result struct {
+		peer *Session
+		err  error
+	}
+	accepted := make(chan result, 1)
 	go func() {
 		conn, err := gateway.Accept(ctx)
 		if err != nil {
-			server <- err
+			accepted <- result{err: err}
 			return
 		}
 		peer, err := Authenticate(ctx, conn, token, true)
-		if err != nil {
-			server <- err
-			return
-		}
-		defer peer.Close()
-		packet, err := peer.ReadPacket(ctx)
-		if err == nil && !bytes.Equal(packet, payload) {
-			err = errors.New("received IP packet differs")
-		}
-		server <- err
+		accepted <- result{peer: peer, err: err}
 	}()
 	client, err := Dial(ctx, hop.LocalAddr().String(), token, &tls.Config{RootCAs: roots})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if err := client.WritePacket(payload); err != nil {
-		t.Fatal(err)
+	server := <-accepted
+	if server.err != nil {
+		t.Fatal(server.err)
 	}
-	if err := <-server; err != nil {
-		t.Fatal(err)
+	defer server.peer.Close()
+	transfer := func(from, to *Session, packet []byte) {
+		t.Helper()
+		if err := from.WritePacket(packet); err != nil {
+			t.Fatal(err)
+		}
+		got, err := to.ReadPacket(ctx)
+		if err != nil || !bytes.Equal(got, packet) {
+			t.Fatalf("inner packet %d bytes, outer path MTU %d: got %d bytes, err %v", len(packet), pathMTU.Load(), len(got), err)
+		}
+	}
+	transfer(client, server.peer, testPacket6(MTU))
+	// An unchanged address pair can acquire a smaller path during an
+	// authenticated session, without an ICMP Packet Too Big indication.
+	for _, mtu := range []int32{1500, 1280} {
+		pathMTU.Store(mtu)
+		for range 16 {
+			transfer(client, server.peer, testPacket4(1350))
+			transfer(server.peer, client, testPacket6(1350))
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 }
 
