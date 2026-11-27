@@ -7,6 +7,7 @@ import CuvenCore
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let state = DispatchQueue(label: "dev.cuven.vpn.state", qos: .userInitiated)
     private let worker = DispatchQueue(label: "dev.cuven.vpn.core", qos: .userInitiated, attributes: .concurrent)
+    private lazy var startupResolver = GatewayStartupResolver(state: state, lookup: TunnelEndpoint.resolve)
     private var session: Session?
     private var packetReadPending = false
 
@@ -29,6 +30,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 completionHandler()
                 return
             }
+            self.startupResolver.cancel()
             self.session = nil
             self.reasserting = false
             session.cancelMonitoring()
@@ -122,16 +124,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             connect(session)
             return
         }
-        worker.async {
-            let resolved = TunnelEndpoint.resolve(host: profile.host, port: profile.port)
-            self.state.async {
-                guard self.session === session else { return }
-                guard !resolved.isEmpty else {
-                    self.terminate(session, failure: .resolution)
-                    return
-                }
+        if session.monitor == nil && !VPNProfile.isIP(profile.host) { startPathMonitor(session) }
+        startupResolver.start(host: profile.host, port: profile.port) { [weak self, weak session] result in
+            guard let self, let session, self.session === session else { return }
+            switch result {
+            case .success(let resolved):
                 session.endpoints.replace(with: resolved)
                 self.connect(session)
+            case .failure(let reason):
+                self.terminate(session, failure: reason)
             }
         }
     }
@@ -381,13 +382,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let previous = session.path
         let newPath = Session.PhysicalPath(available: available, interface: interface ?? previous?.interface)
         session.path = newPath
-        guard let previous else { return }
+        guard let previous else {
+            if !available && startupResolver.isPending { startupResolver.pathChanged(available: false) }
+            return
+        }
         if available {
             let switchedInterface = previous.interface != nil && interface != nil && previous.interface != interface
             guard !previous.available || switchedInterface else { return }
             session.reconnectAttempts = 0
         }
 
+        if startupResolver.isPending {
+            startupResolver.pathChanged(available: available)
+            return
+        }
+        guard session.routesInstalled else { return }
         session.endpoints.pathChanged()
         session.pendingRetry?.cancel()
         session.pendingRetry = nil
@@ -416,6 +425,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func terminate(_ session: Session, failure: TunnelFailure) {
+        startupResolver.cancel()
         self.session = nil
         reasserting = false
         session.cancelMonitoring()

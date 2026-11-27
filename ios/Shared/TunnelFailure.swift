@@ -7,6 +7,7 @@ enum TunnelFailure: Int, LocalizedError, CustomNSError {
     case gatewayIPv6, certificateName, certificateTime, certificateTrust, gatewayTimeout
     case gatewayBusy, gatewayRejected
     case credentialLocked
+    case resolutionTimeout
 
     static func fromStartupCode(_ code: String) -> Self? {
         switch code {
@@ -31,6 +32,7 @@ enum TunnelFailure: Int, LocalizedError, CustomNSError {
         switch self {
         case .configuration: "VPN 配置无效，请在 Cuven 中重新保存。"
         case .resolution: "无法解析 VPN 服务器地址。"
+        case .resolutionTimeout: "解析网关域名超时。请检查当前网络的 DNS 后重连，或填写网关 IP 和证书域名。"
         case .connection: "无法连接 VPN 服务器，请检查地址、凭据和服务端配置。"
         case .settings: "无法应用系统 VPN 路由或 DNS 设置。"
         case .disconnected: "VPN 连接已断开，且无法恢复。"
