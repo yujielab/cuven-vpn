@@ -6,7 +6,7 @@ struct GatewayEndpoints {
     private var addresses: [String] = []
     private var nextIndex = 0
     private var pathID = UUID()
-    private var lookup: (id: UUID, path: UUID)?
+    private var lookupPaths: [UUID: UUID] = [:]
     private var nextLookup: DispatchTime?
 
     var hasUntriedAddress: Bool { nextIndex < addresses.count }
@@ -35,17 +35,18 @@ struct GatewayEndpoints {
     }
 
     mutating func beginRefresh(now: DispatchTime = .now()) -> UUID? {
-        guard lookup == nil else { return nil }
+        // Allow a new path to resolve while getaddrinfo on its predecessor is
+        // still blocked. Bound the work even if interfaces keep changing.
+        guard lookupPaths.count < 2, !lookupPaths.values.contains(pathID) else { return nil }
         if let nextLookup, now < nextLookup { return nil }
         let id = UUID()
-        lookup = (id, pathID)
+        lookupPaths[id] = pathID
         nextLookup = now + .seconds(60)
         return id
     }
 
     mutating func finishRefresh(_ id: UUID, with resolved: [String]) {
-        guard let active = lookup, active.id == id else { return }
-        lookup = nil
-        if pathID == active.path { replace(with: resolved) }
+        guard lookupPaths.removeValue(forKey: id) == pathID else { return }
+        replace(with: resolved)
     }
 }

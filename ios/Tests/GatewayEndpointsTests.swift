@@ -21,21 +21,39 @@ final class GatewayEndpointsTests: XCTestCase {
         XCTAssertEqual(endpoints.next(), "v6")
     }
 
-    func testStalePathLookupFinishesBeforeNewLookupReplacesCachedEndpoint() throws {
+    func testNewPathCanFinishBeforeStaleLookupWithoutLosingItsEndpoints() throws {
         var endpoints = GatewayEndpoints()
         endpoints.replace(with: ["old"])
         let oldLookup = try XCTUnwrap(endpoints.beginRefresh())
         endpoints.pathChanged()
-        XCTAssertNil(endpoints.beginRefresh())
-        endpoints.finishRefresh(oldLookup, with: ["obsolete"])
-        XCTAssertEqual(endpoints.next(), "old")
         let newLookup = try XCTUnwrap(endpoints.beginRefresh())
+        XCTAssertNil(endpoints.beginRefresh())
+        XCTAssertEqual(endpoints.next(), "old")
         endpoints.finishRefresh(newLookup, with: ["new-primary", "new-secondary"])
+        endpoints.finishRefresh(oldLookup, with: ["obsolete"])
         // A successful attempt on the old address can race the new DNS answer.
         endpoints.prefer("old")
         XCTAssertEqual(endpoints.next(), "new-primary")
         XCTAssertEqual(endpoints.next(), "new-secondary")
         endpoints.prefer("new-secondary")
         XCTAssertEqual(endpoints.next(), "new-secondary")
+    }
+
+    func testRepeatedHandoversBoundPendingLookupsAndDiscardBothOldAnswers() throws {
+        var endpoints = GatewayEndpoints()
+        let first = try XCTUnwrap(endpoints.beginRefresh())
+        endpoints.pathChanged()
+        let second = try XCTUnwrap(endpoints.beginRefresh())
+        for _ in 0..<5 {
+            endpoints.pathChanged()
+            XCTAssertNil(endpoints.beginRefresh())
+        }
+        endpoints.finishRefresh(second, with: ["obsolete"])
+        XCTAssertNil(endpoints.next())
+        let current = try XCTUnwrap(endpoints.beginRefresh())
+        endpoints.finishRefresh(first, with: ["older"])
+        XCTAssertNil(endpoints.next())
+        endpoints.finishRefresh(current, with: ["current"])
+        XCTAssertEqual(endpoints.next(), "current")
     }
 }
