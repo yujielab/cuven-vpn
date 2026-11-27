@@ -31,10 +31,14 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 	peers := make(chan *Session, 1)
 	serverErrors := make(chan error, 2)
 	go func() {
-		for range 2 {
+		for attempt := range 3 {
 			connection, err := listener.Accept(ctx)
 			if err != nil {
 				serverErrors <- err
+				return
+			}
+			if attempt == 2 {
+				serverErrors <- connection.CloseWithError(closeRejected, "gateway busy")
 				return
 			}
 			peer, err := Authenticate(ctx, connection, token, true)
@@ -55,7 +59,7 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 		_ = classical.CloseWithError(0, "")
 		t.Fatal("accepted a TLS client offering only classical key exchange")
 	}
-	if peer, err := Dial(ctx, address, Token{4}, conf); !errors.Is(err, ErrAuthentication) || peer != nil {
+	if peer, err := Dial(ctx, address, Token{4}, conf); !errors.Is(err, ErrGatewayRejected) || !errors.Is(err, ErrAuthentication) || peer != nil {
 		t.Fatalf("wrong token: peer %v, error %v", peer, err)
 	}
 	if err := <-serverErrors; !errors.Is(err, ErrAuthentication) {
@@ -81,6 +85,12 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	if other, err := Dial(ctx, address, token, conf); other != nil || !errors.Is(err, ErrGatewayBusy) {
+		t.Fatalf("occupied gateway: peer %v, error %v", other, err)
+	}
+	if err := <-serverErrors; err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		from, to *Session
 		packet   []byte
@@ -94,6 +104,30 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 		}
 		if packet, err := test.to.ReadPacket(ctx); err != nil || !bytes.Equal(packet, test.packet) {
 			t.Fatalf("packet round trip: got %d of %d bytes, error %v", len(packet), len(test.packet), err)
+		}
+	}
+}
+
+func TestRecognizeRemoteGatewayClose(t *testing.T) {
+	for _, tc := range []struct {
+		remote bool
+		code   quic.ApplicationErrorCode
+		reason string
+		want   error
+	}{
+		{true, closeRejected, "gateway busy", ErrGatewayBusy},
+		{true, closeRejected, "authentication failed", ErrGatewayRejected},
+		{false, closeRejected, "gateway busy", nil},
+		{true, closeNormal, "gateway busy", nil},
+		{true, closeRejected, "unrecognized reason", nil},
+	} {
+		raw := &quic.ApplicationError{Remote: tc.remote, ErrorCode: tc.code, ErrorMessage: tc.reason}
+		want := tc.want
+		if want == nil {
+			want = raw
+		}
+		if got := dialError(raw); got != want {
+			t.Errorf("got %v, want %v", got, want)
 		}
 	}
 }

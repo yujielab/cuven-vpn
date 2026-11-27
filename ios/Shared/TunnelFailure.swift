@@ -5,10 +5,13 @@ enum TunnelFailure: Int, LocalizedError, CustomNSError {
     case strictRouting
     case credentialUnavailable, credentialEntitlement, manualCredential
     case gatewayIPv6, certificateName, certificateTime, certificateTrust, gatewayTimeout
+    case gatewayBusy, gatewayRejected
 
     static func fromStartupCode(_ code: String) -> Self? {
         switch code {
         case "": nil
+        case "gateway-busy": .gatewayBusy
+        case "gateway-rejected": .gatewayRejected
         case "gateway-ipv6": .gatewayIPv6
         case "certificate-name": .certificateName
         case "certificate-time": .certificateTime
@@ -36,6 +39,8 @@ enum TunnelFailure: Int, LocalizedError, CustomNSError {
         case .credentialEntitlement: "隧道扩展读取凭据时收到 -34018。请核对扩展和主 App 签名中的共享钥匙串组。"
         case .manualCredential: "本次启动缺少匹配的手动连接凭据。请从 Cuven 内输入令牌并连接。"
         case .strictRouting: "系统 VPN 全流量路由配置不完整，请在 Cuven 中重新保存。"
+        case .gatewayBusy: "网关仍有一个活动会话。如果刚切换网络，请稍后再连接。若另一台设备正在使用网关，请先在那台设备上断开。"
+        case .gatewayRejected: "网关拒绝了本次隧道认证。请核对 Cuven 中的接入令牌与网关配置。"
         case .gatewayIPv6: "网关仅支持 IPv4。请在网关启用 IPv6 转发，或在 Cuven 中关闭「网关支持 IPv6」。"
         case .certificateName: "网关证书与配置的服务器名称不匹配。请核对证书域名。"
         case .certificateTime: "网关证书当前不在有效期内。请核对设备时间和网关证书有效期。"

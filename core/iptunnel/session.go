@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -30,8 +31,10 @@ const (
 )
 
 var (
-	ErrAuthentication = errors.New("Cuven IP tunnel authentication failed")
-	ErrInvalidPacket  = errors.New("invalid IP packet")
+	ErrAuthentication  = errors.New("Cuven IP tunnel authentication failed")
+	ErrGatewayBusy     = errors.New("Cuven gateway already serves a session")
+	ErrGatewayRejected = fmt.Errorf("%w: gateway rejected handshake", ErrAuthentication)
+	ErrInvalidPacket   = errors.New("invalid IP packet")
 )
 
 // Token is a secret generated independently for a client enrollment.
@@ -86,14 +89,29 @@ func Dial(ctx context.Context, address string, token Token, tlsConfig *tls.Confi
 	defer cancel()
 	connection, err := quic.DialAddr(startup, address, config, transport)
 	if err != nil {
-		return nil, err
+		return nil, dialError(err)
 	}
 	dual, err := authenticateClient(startup, connection, token)
 	if err != nil {
 		_ = connection.CloseWithError(closeRejected, "authentication failed")
-		return nil, err
+		return nil, dialError(err)
 	}
 	return newSession(connection, dual), nil
+}
+
+// Cuven IP v1 uses the same QUIC application error code for an occupied
+// gateway and a rejected handshake. Recognize only its two defined reasons.
+func dialError(err error) error {
+	var closed *quic.ApplicationError
+	if errors.As(err, &closed) && closed.Remote && closed.ErrorCode == closeRejected {
+		switch closed.ErrorMessage {
+		case "gateway busy":
+			return ErrGatewayBusy
+		case "authentication failed":
+			return ErrGatewayRejected
+		}
+	}
+	return err
 }
 
 // Listener owns the UDP socket and QUIC listener for one gateway.
@@ -186,8 +204,10 @@ func authenticateClient(ctx context.Context, connection *quic.Conn, token Token)
 		return false, err
 	}
 	var reply [1]byte
-	if _, err := io.ReadFull(stream, reply[:]); err != nil ||
-		(reply[0] != authAccepted && reply[0] != authAccepted|authIPv6) {
+	if _, err := io.ReadFull(stream, reply[:]); err != nil {
+		return false, err
+	}
+	if reply[0] != authAccepted && reply[0] != authAccepted|authIPv6 {
 		return false, ErrAuthentication
 	}
 	stream.CancelRead(0)

@@ -131,6 +131,10 @@ func startFailureCode(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, iptunnel.ErrGatewayBusy):
+		return "gateway-busy"
+	case errors.Is(err, iptunnel.ErrGatewayRejected):
+		return "gateway-rejected"
 	case errors.Is(err, errIPv6Unavailable):
 		return "gateway-ipv6"
 	case errors.As(err, &hostname):

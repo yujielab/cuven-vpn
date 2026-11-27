@@ -7,6 +7,7 @@ final class DisconnectDiagnosticTests: XCTestCase {
     func testStartupCodesReachAppWithoutEndpointOrCredentialDetails() {
         XCTAssertNil(TunnelFailure.fromStartupCode(""))
         let cases: [(String, TunnelFailure)] = [
+            ("gateway-busy", .gatewayBusy), ("gateway-rejected", .gatewayRejected),
             ("gateway-ipv6", .gatewayIPv6), ("certificate-name", .certificateName),
             ("certificate-time", .certificateTime), ("certificate", .certificateTrust),
             ("timeout", .gatewayTimeout), ("cancelled", .cancelled),
