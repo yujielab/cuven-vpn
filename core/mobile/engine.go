@@ -56,8 +56,7 @@ type session struct {
 
 type packetPolicy struct {
 	blockLAN      bool
-	filterPrivacy bool
-	blockUDP      bool
+	blockPlainDNS bool
 }
 
 type packetTunnel interface {
@@ -72,12 +71,11 @@ func NewEngine() *Engine { return &Engine{} }
 
 // Start establishes the transport and initializes the IP stack. Stop may be
 // called concurrently to cancel startup. The address includes the server port.
-// The blockUDP option applies to app packets in high-security mode.
-func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, mtu int64, requirePostQuantum, blockLAN, highSecurity, blockUDP bool) error {
+func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, mtu int64, requirePostQuantum, blockLAN, highSecurity bool) error {
 	if receiveBytesPerSecond < 0 {
 		return errInvalidRate
 	}
-	policy := packetPolicy{filterPrivacy: highSecurity, blockUDP: blockUDP}
+	policy := packetPolicy{blockPlainDNS: highSecurity}
 	return e.start(mtu, policy, func(ctx context.Context) (packetTunnel, io.Closer, error) {
 		client, err := hy2.Dial(ctx, hy2.Config{
 			Address:               address,
@@ -104,11 +102,9 @@ func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, 
 
 // StartWireGuard connects to the Cuven relay and awaits the peer handshake.
 // Keys are 32 bytes encoded as padded base64. An empty PSK omits it.
-// Camouflage requires a matching relay envelope version and enables filtering
-// for plain DNS and identifiable STUN/TURN traffic.
-// The blockUDP option applies to app packets when camouflage is enabled.
-func (e *Engine) StartWireGuard(endpoint, privateKey, peerPublicKey, presharedKey, transportKey string, mtu int64, blockLAN, camouflage, blockUDP bool) error {
-	policy := packetPolicy{blockLAN: blockLAN, filterPrivacy: camouflage, blockUDP: blockUDP}
+// HTTPS/3 uses a relay with a matching v2 envelope and a trusted certificate.
+func (e *Engine) StartWireGuard(endpoint, privateKey, peerPublicKey, presharedKey, transportKey string, mtu int64, blockLAN, camouflage, https3 bool, serverName string) error {
+	policy := packetPolicy{blockLAN: blockLAN, blockPlainDNS: camouflage}
 	return e.start(mtu, policy, func(ctx context.Context) (packetTunnel, io.Closer, error) {
 		stack, err := wg.Open(ctx, wg.Config{
 			Endpoint:      endpoint,
@@ -117,6 +113,8 @@ func (e *Engine) StartWireGuard(endpoint, privateKey, peerPublicKey, presharedKe
 			PresharedKey:  presharedKey,
 			TransportKey:  transportKey,
 			Camouflage:    camouflage,
+			HTTPS3:        https3,
+			ServerName:    serverName,
 		}, int(mtu))
 		return stack, nil, err
 	})
@@ -171,7 +169,7 @@ func (e *Engine) WriteBatch(batch []byte) error {
 	}
 	for _, packet := range packets[:count] {
 		if (live.policy.blockLAN && tunnel.IsLANPacket(packet)) ||
-			(live.policy.filterPrivacy && tunnel.RejectPrivateTraffic(packet, live.policy.blockUDP)) {
+			(live.policy.blockPlainDNS && tunnel.RejectPlainDNS(packet)) {
 			continue
 		}
 		if err := live.tunnel.WritePacket(packet); err != nil && !errors.Is(err, tunnel.ErrInvalidPacket) {

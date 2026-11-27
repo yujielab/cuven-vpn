@@ -20,11 +20,10 @@ final class VPNProfileTests: XCTestCase {
     func testHighSecurityRequiresAnIPButAllowsASeparateTLSName() throws {
         XCTAssertThrowsError(try VPNProfile(host: "edge.example.com", highSecurity: true))
         let profile = try VPNProfile(
-            host: "2001:db8::1", serverName: "edge.example.com", highSecurity: true, blockAppUDP: true
+            host: "2001:db8::1", serverName: "edge.example.com", highSecurity: true
         )
         let decoded = try VPNProfile.decode(JSONEncoder().encode(profile))
         XCTAssertTrue(decoded.highSecurity)
-        XCTAssertTrue(decoded.blockAppUDP)
         XCTAssertEqual(decoded.serverName, "edge.example.com")
     }
 
@@ -33,9 +32,36 @@ final class VPNProfileTests: XCTestCase {
         let data = try JSONEncoder().encode(profile)
         var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         fields.removeValue(forKey: "highSecurity")
-        fields.removeValue(forKey: "blockAppUDP")
+        fields.removeValue(forKey: "https3Camouflage")
+        fields.removeValue(forKey: "encryptedDNS")
         let previous = try JSONSerialization.data(withJSONObject: fields)
         XCTAssertEqual(try VPNProfile.decode(previous), profile)
+    }
+
+    func testEncryptedDNSRequiresHTTPSAndLiteralBootstrap() throws {
+        let url = try XCTUnwrap(URL(string: "https://resolver.example.com/dns-query"))
+        let dns = try EncryptedDNSProfile(url: url, bootstrapServers: ["203.0.113.1"]).validated()
+        let profile = try VPNProfile(host: "203.0.113.2", highSecurity: true, encryptedDNS: dns)
+        XCTAssertEqual(try VPNProfile.decode(JSONEncoder().encode(profile)).encryptedDNS, dns)
+        XCTAssertThrowsError(try EncryptedDNSProfile(url: url, bootstrapServers: ["resolver.example.com"]).validated())
+        let http = try XCTUnwrap(URL(string: "http://resolver.example.com/dns-query"))
+        XCTAssertThrowsError(try EncryptedDNSProfile(url: http, bootstrapServers: ["203.0.113.1"]).validated())
+    }
+
+    func testHTTPS3CarrierRequiresHighSecurityAndCuvenWG() throws {
+        let key = Data(repeating: 1, count: 32).base64EncodedString()
+        let peer = try WireGuardProfile(tunnelAddresses: ["10.66.0.2/32"], peerPublicKey: key).validated()
+        let plain = try VPNProfile(host: "203.0.113.2", transport: .cuvenWG, wireGuard: peer, https3Camouflage: true)
+        let high = try VPNProfile(
+            host: "203.0.113.2", transport: .cuvenWG, wireGuard: peer,
+            serverName: "edge.example.com", highSecurity: true, https3Camouflage: true
+        )
+        let hy2 = try VPNProfile(host: "203.0.113.2", highSecurity: true, https3Camouflage: true)
+        XCTAssertFalse(plain.https3Camouflage)
+        XCTAssertFalse(hy2.https3Camouflage)
+        let decoded = try VPNProfile.decode(JSONEncoder().encode(high))
+        XCTAssertTrue(decoded.https3Camouflage)
+        XCTAssertEqual(decoded.serverName, "edge.example.com")
     }
 
     func testWireGuardProfileAndCredentialValidation() throws {

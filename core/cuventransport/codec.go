@@ -73,12 +73,8 @@ func NewCodec(key []byte) (*Codec, error) {
 }
 
 func NewCodecVersion(key []byte, version Version) (*Codec, error) {
-	if len(key) != KeySize {
-		return nil, errKeySize
-	}
-	var zero [KeySize]byte
-	if bytes.Equal(key, zero[:]) {
-		return nil, errors.New("Cuven envelope key must be nonzero")
+	if err := validateKey(key); err != nil {
+		return nil, err
 	}
 	var domain string
 	switch version {
@@ -101,6 +97,17 @@ func NewCodecVersion(key []byte, version Version) (*Codec, error) {
 		}
 	}
 	return c, nil
+}
+
+func validateKey(key []byte) error {
+	if len(key) != KeySize {
+		return errKeySize
+	}
+	var zero [KeySize]byte
+	if bytes.Equal(key, zero[:]) {
+		return errors.New("Cuven envelope key must be nonzero")
+	}
+	return nil
 }
 
 func (c *Codec) Seal(direction Direction, kind Kind, payload []byte) ([]byte, error) {

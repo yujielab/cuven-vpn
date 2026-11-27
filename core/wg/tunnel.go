@@ -3,6 +3,7 @@ package wg
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -35,6 +36,12 @@ type Config struct {
 	// Camouflage selects the encrypted, padded v2 envelope. The relay must
 	// use the same version.
 	Camouflage bool
+	// HTTPS3 carries the v2 envelope over an authenticated CONNECT-UDP
+	// request. ServerName overrides the certificate name from Endpoint;
+	// a nil RootCAs uses the platform trust store.
+	HTTPS3     bool
+	ServerName string
+	RootCAs    *x509.CertPool
 }
 
 type Tunnel struct {
@@ -50,6 +57,9 @@ func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 	if mtu < 1280 || mtu > wireGuardMTU {
 		return nil, fmt.Errorf("Cuven tunnel MTU must be between 1280 and %d", wireGuardMTU)
 	}
+	if cfg.HTTPS3 && !cfg.Camouflage {
+		return nil, errors.New("Cuven HTTPS/3 requires the v2 envelope")
+	}
 
 	privateKey, err := decodeKey(cfg.PrivateKey)
 	if err != nil {
@@ -63,6 +73,7 @@ func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 	if err != nil {
 		return nil, errors.New("invalid Cuven relay key")
 	}
+	defer clear(sharedKey[:])
 	var pskLine string
 	if cfg.PresharedKey != "" {
 		psk, err := decodeKey(cfg.PresharedKey)
@@ -71,14 +82,16 @@ func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 		}
 		pskLine = "preshared_key=" + hex.EncodeToString(psk[:]) + "\n"
 	}
-	version := cuventransport.Version1
-	if cfg.Camouflage {
-		version = cuventransport.Version2
-	}
-	codec, err := cuventransport.NewCodecVersion(sharedKey[:], version)
-	clear(sharedKey[:])
-	if err != nil {
-		return nil, err
+	var codec *cuventransport.Codec
+	if !cfg.HTTPS3 {
+		version := cuventransport.Version1
+		if cfg.Camouflage {
+			version = cuventransport.Version2
+		}
+		codec, err = cuventransport.NewCodecVersion(sharedKey[:], version)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	starting, stopStart := context.WithTimeout(ctx, startupTimeout)
@@ -87,21 +100,38 @@ func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 	if err != nil {
 		return nil, err
 	}
+	var connectionError error
 	for _, endpoint := range endpoints {
-		t, usable, err := openEndpoint(starting, ctx, endpoint, codec, mtu, privateKey, publicKey, pskLine)
+		dial := func(port uint16) (*relaySession, error) {
+			if !cfg.HTTPS3 {
+				carrier, err := dialUDPRelay(endpoint, port)
+				if err != nil {
+					return nil, err
+				}
+				return &relaySession{relayCarrier: carrier, codec: codec}, nil
+			}
+			dialCtx, stopDial := context.WithTimeout(starting, relayTimeout+time.Second)
+			defer stopDial()
+			return dialHTTPS3Relay(dialCtx, endpoint, port, cfg.Endpoint, cfg.ServerName, cfg.RootCAs, sharedKey[:])
+		}
+		t, usable, err := openEndpoint(starting, ctx, endpoint, dial, mtu, privateKey, publicKey, pskLine)
 		if err == nil {
 			return t, nil
 		}
 		if usable || starting.Err() != nil {
 			return nil, err
 		}
+		connectionError = err
 	}
-	return nil, errors.New("Cuven relay did not answer an authenticated probe")
+	if connectionError == nil {
+		connectionError = errors.New("Cuven relay did not resolve to a usable address")
+	}
+	return nil, connectionError
 }
 
-func openEndpoint(starting, lifetime context.Context, endpoint netip.AddrPort, codec *cuventransport.Codec, mtu int, privateKey, publicKey [32]byte, pskLine string) (*Tunnel, bool, error) {
+func openEndpoint(starting, lifetime context.Context, endpoint netip.AddrPort, dial relayDial, mtu int, privateKey, publicKey [32]byte, pskLine string) (*Tunnel, bool, error) {
 	tun := newMemoryTUN(mtu)
-	bind := newRelayBind(endpoint, codec)
+	bind := newRelayBind(endpoint, dial)
 	dev := device.NewDevice(tun, bind, device.NewLogger(device.LogLevelSilent, ""))
 	applied := false
 	defer func() {

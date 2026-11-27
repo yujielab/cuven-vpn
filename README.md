@@ -13,15 +13,21 @@
 
 ## 高安全模式
 
-高安全模式启用 iOS 全流量策略、局域网阻止和隧道内 Cloudflare DNS over HTTPS。Cuven 拦截隧道内常见明文 DNS、mDNS 和 LLMNR 端口。已建立的高安全隧道断线后保留路由并持续退避重连，直到恢复、用户断开或 iOS 结束扩展。填写服务器的 IPv4 或 IPv6 地址可避免连接前解析 VPN 服务器域名。HY2 仍可单独填写用于证书校验的 TLS 域名。高安全模式按所选协议启动，可选的跨协议回退暂停。
+高安全模式启用 iOS 全流量策略、局域网阻止和隧道内 HTTPS DNS。默认使用 Cloudflare，可填写自建 HTTPS 解析器 URL 和该解析器的公网 IPv4 或 IPv6 地址。解析器身份由 HTTPS 证书校验。Cuven 拦截应用直接发送的明文 DNS 和 LLMNR。已建立的高安全隧道断线后保留路由并退避重连，直到恢复、用户断开或 iOS 结束扩展。
 
-Cuven WG 的高安全模式需要服务端选择 v2 封装。v2 将报文类型、长度与随机填充一并加密，外层没有固定标记，仍由 WireGuard 使用客户端和服务器密钥完成内层对端认证。v1 与 v2 可在不同 UDP 端口并行部署。加密填充减少固定报文特征，流量的时序、速率和端点地址仍可被观察。
+VPN 服务器需填写数值 IP，以免在连接前解析服务器域名。HY2 和 Cuven WG 的 HTTPS/3 载体可单独填写证书域名。高安全模式使用所选协议，可选的跨协议回退暂停。
+
+WebRTC 的 STUN/TURN 和普通应用 UDP 随 VPN 路由。站点获得的是实际出口映射。浏览器仍可能公开本机候选地址，VPN 无法更改第三方浏览器的候选列表。DHCP、部分运营商及伴随设备流量仍适用 iOS 系统例外。应用与目标站之间的内容加密由 HTTPS 等应用协议负责。 [Apple 全流量路由文档](https://developer.apple.com/documentation/networkextension/nevpnprotocol/includeallnetworks)
+
+### Cuven WG 的 HTTPS/3 载体
+
+高安全 Cuven WG 使用 v2 封装，将报文类型、长度与随机填充一并加密。普通 UDP 中继可用 `-envelope-version 2` 启动。开启「HTTPS/3 载体」后，客户端通过校验证书的 TLS 1.3 和 HTTP/3 CONNECT-UDP 承载 v2 报文。客户端配置中继公网 IP、端口和证书域名。
 
 ```sh
-./cuven-wg-relay -listen :51822 -upstream 127.0.0.1:51820 -envelope-version 2
+./cuven-wg-relay -https3 -listen :443 -upstream 127.0.0.1:51820   -tls-cert /path/to/fullchain.pem -tls-key /path/to/privkey.pem
 ```
 
-高安全模式会拦截常用 STUN/TURN 端口和可识别的明文探测报文，部分通话可能失败。还可开启「阻止应用发出 UDP」，丢弃进入隧道的应用 UDP，包括无法识别载荷的 UDP。该选项保留外层 VPN UDP 和应用 TCP，可能影响 HTTP/3、通话和游戏。浏览器或应用仍可能通过 WebRTC 接口披露本机候选地址，封装于 HTTPS 等加密传输的探测也可能无法识别。DHCP、部分运营商及伴随设备流量仍适用 iOS 系统例外。加密覆盖 iPhone 到 VPN 服务端，应用与目标站之间的内容加密由 HTTPS 等应用协议负责。 [Apple 全流量路由文档](https://developer.apple.com/documentation/networkextension/nevpnprotocol/includeallnetworks)
+接入网络仍能观察连接目标、流量时序和总量。目标网站能观察 VPN 出口 IP，并结合 IP 归属及浏览器信号识别访问。 [HTTP CONNECT-UDP](https://www.rfc-editor.org/rfc/rfc9298)
 
 ## 构建 iOS 客户端
 
@@ -41,7 +47,7 @@ open Cuven.xcodeproj
 
 ## 配置 Cuven WG
 
-1. 在服务端配置 WireGuard，服务端设置 `ListenPort = 51820`，接口 MTU 设置为 `1280`（使用 `wg-quick` 时在 `[Interface]` 中填写 `MTU = 1280`）。为客户端生成独立的 WireGuard 密钥对，在服务端 Peer 中填入客户端公钥和客户端分配地址，例如 `AllowedIPs = 10.66.0.2/32, fd66::2/128`。按所需 IP 家族配置服务端转发和出口路由。通过防火墙限制原始 WireGuard 端口至本机，并向客户端开放中继 UDP 端口。
+1. 在服务端配置 WireGuard，服务端设置 `ListenPort = 51820`，接口 MTU 设置为 `1280`（使用 `wg-quick` 时在 `[Interface]` 中填写 `MTU = 1280`）。为客户端生成独立的 WireGuard 密钥对，在服务端 Peer 中填入客户端公钥和客户端分配地址，例如 `AllowedIPs = 10.66.0.2/32, fd66::2/128`。为启用的 IP 家族配置服务端转发和出口路由。私有客户端地址应由服务端 NAT 至所选公网出口。使用原生路由 IPv6 时，确保地址属于 VPN 分配的前缀。通过防火墙限制原始 WireGuard 端口至本机，并向客户端开放中继 UDP 端口。
 2. 用 `openssl rand -base64 32` 生成部署专用的随机封装密钥。用你的服务管理器向 `CUVEN_RELAY_KEY` 注入标准 Base64 密钥，勿把密钥写入仓库。配置完成后启动中继。
 
    ```sh
@@ -51,6 +57,8 @@ open Cuven.xcodeproj
    ```
 
 3. 在 iOS 选择 Cuven WG，输入中继地址和端口、客户端隧道地址、服务端 WireGuard 公钥、客户端私钥和封装密钥。若服务端 Peer 配置了 WireGuard 预共享密钥，客户端使用相同值。可只配置一种 IP 家族，另一种家族的流量在隧道期间被丢弃。重连时需要能访问中继的 UDP 端口。
+
+如需让 DNS 使用与应用相同的运营方出口，可在出口部署自建 HTTPS 递归解析器，并在 Cuven 填写其 URL 和公网地址。权威 DNS 通常看到递归解析器的地址。使用公共递归 DNS 时，这一地址可能与网站看到的 VPN 出口不同。
 
 Cuven 封装使用带版本的 UDP 报文、按方向派生的 XChaCha20-Poly1305 密钥和随机 nonce。中继只有在认证外层报文后才会转发到本机 WireGuard。客户端先确认中继可达，再等待 WireGuard 完成对端认证。标准 WireGuard 客户端需要连接原生 WireGuard 端口。v1 的 UDP 额外开销为 45 字节。v2 增加 43 字节和最多 128 字节填充，总 UDP 负载限制为 1452 字节。低路径 MTU 的网络可能需要使用 HY2。 [WireGuard 协议](https://www.wireguard.com/protocol/)
 

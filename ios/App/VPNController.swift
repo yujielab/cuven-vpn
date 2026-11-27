@@ -23,7 +23,10 @@ final class VPNController: ObservableObject {
     @Published var blockLAN = false
     @Published var preventBypass = false
     @Published var highSecurity = false
-    @Published var blockAppUDP = false
+    @Published var https3Camouflage = false
+    @Published var useEncryptedDNS = false
+    @Published var encryptedDNSURL = ""
+    @Published var encryptedDNSBootstrap = ""
     @Published private(set) var autoConnectPaused = false
     @Published private(set) var hasCredential = false
     @Published private(set) var status = NEVPNStatus.invalid
@@ -171,7 +174,10 @@ final class VPNController: ObservableObject {
             blockLAN = false
             preventBypass = false
             highSecurity = false
-            blockAppUDP = false
+            https3Camouflage = false
+            useEncryptedDNS = false
+            encryptedDNSURL = ""
+            encryptedDNSBootstrap = ""
         }
         refreshCredential()
         error = nil
@@ -344,11 +350,22 @@ final class VPNController: ObservableObject {
         } else {
             wireGuard = nil
         }
+        let encryptedDNS: EncryptedDNSProfile?
+        if highSecurity && useEncryptedDNS {
+            let text = encryptedDNSURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: text) else { throw ProfileError.encryptedDNS }
+            encryptedDNS = EncryptedDNSProfile(
+                url: url, bootstrapServers: Self.splitList(encryptedDNSBootstrap)
+            )
+        } else {
+            encryptedDNS = nil
+        }
         return try VPNProfile(
             host: host, transport: transport, wireGuard: wireGuard, port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 0,
             serverName: serverName, customDNSServers: Self.splitList(dns), useCustomDNS: useCustomDNS,
             autoConnect: autoConnect, requirePostQuantum: requirePostQuantum,
-            blockLAN: blockLAN, preventBypass: preventBypass, highSecurity: highSecurity, blockAppUDP: blockAppUDP
+            blockLAN: blockLAN, preventBypass: preventBypass, highSecurity: highSecurity,
+            https3Camouflage: https3Camouflage, encryptedDNS: encryptedDNS
         )
     }
 
@@ -399,6 +416,9 @@ final class VPNController: ObservableObject {
         blockLAN = profile.blockLAN
         preventBypass = profile.preventBypass
         highSecurity = profile.highSecurity
-        blockAppUDP = profile.blockAppUDP
+        https3Camouflage = profile.https3Camouflage
+        useEncryptedDNS = profile.encryptedDNS != nil
+        encryptedDNSURL = profile.encryptedDNS?.url.absoluteString ?? ""
+        encryptedDNSBootstrap = profile.encryptedDNS?.bootstrapServers.joined(separator: ", ") ?? ""
     }
 }

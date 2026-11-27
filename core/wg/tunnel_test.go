@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/netip"
 	"strconv"
@@ -24,14 +29,17 @@ import (
 
 func TestTunnelThroughCuvenRelay(t *testing.T) {
 	t.Run("v1", func(t *testing.T) {
-		testTunnelThroughCuvenRelay(t, cuventransport.Version1)
+		testTunnelThroughCuvenRelay(t, cuventransport.Version1, false)
 	})
 	t.Run("v2", func(t *testing.T) {
-		testTunnelThroughCuvenRelay(t, cuventransport.Version2)
+		testTunnelThroughCuvenRelay(t, cuventransport.Version2, false)
+	})
+	t.Run("HTTPS3", func(t *testing.T) {
+		testTunnelThroughCuvenRelay(t, cuventransport.Version2, true)
 	})
 }
 
-func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version) {
+func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version, https3 bool) {
 	t.Helper()
 	const mtu = 1280
 	clientKey := newWireGuardKey(t)
@@ -58,10 +66,19 @@ func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version) {
 	}
 	relayCtx, stopRelay := context.WithCancel(t.Context())
 	relayErr := make(chan error, 1)
+	var tlsConfig *tls.Config
+	var roots *x509.CertPool
+	const serverName = "cuven-relay.test"
+	if https3 {
+		tlsConfig, roots = newTLSConfig(t, serverName)
+	}
 	go func() {
-		relayErr <- cuventransport.ServeRelay(relayCtx, listener, cuventransport.RelayConfig{
-			Key: relayKey, Upstream: serverAddr, Version: version,
-		})
+		cfg := cuventransport.RelayConfig{Key: relayKey, Upstream: serverAddr, Version: version}
+		if https3 {
+			relayErr <- cuventransport.ServeHTTPS3Relay(relayCtx, listener, tlsConfig, cfg)
+		} else {
+			relayErr <- cuventransport.ServeRelay(relayCtx, listener, cfg)
+		}
 	}()
 	defer func() {
 		stopRelay()
@@ -77,6 +94,9 @@ func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version) {
 		PresharedKey:  base64.StdEncoding.EncodeToString(psk),
 		TransportKey:  base64.RawStdEncoding.EncodeToString(relayKey),
 		Camouflage:    version == cuventransport.Version2,
+		HTTPS3:        https3,
+		ServerName:    serverName,
+		RootCAs:       roots,
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -102,7 +122,11 @@ func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version) {
 			invalid.Close()
 			t.Fatal("relay accepted an incorrect transport key")
 		}
-		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "Cuven relay probe") {
+		if https3 {
+			if !strings.Contains(err.Error(), "rejected CONNECT-UDP") {
+				t.Fatalf("wanted HTTP/3 authorization rejection, got %v", err)
+			}
+		} else if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "Cuven relay probe") {
 			t.Fatalf("wanted missing authenticated probe, got %v", err)
 		}
 	})
@@ -116,10 +140,28 @@ func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version) {
 			invalid.Close()
 			t.Fatal("relay accepted an incompatible transport version")
 		}
-		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "Cuven relay probe") {
+		if https3 {
+			if !strings.Contains(err.Error(), "requires the v2 envelope") {
+				t.Fatalf("wanted an HTTPS/3 profile validation error, got %v", err)
+			}
+		} else if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "Cuven relay probe") {
 			t.Fatalf("wanted missing authenticated probe, got %v", err)
 		}
 	})
+	if https3 {
+		t.Run("untrusted certificate", func(t *testing.T) {
+			bad := cfg
+			bad.RootCAs = x509.NewCertPool()
+			invalid, err := Open(ctx, bad, mtu)
+			if err == nil {
+				invalid.Close()
+				t.Fatal("accepted an untrusted HTTPS/3 certificate")
+			}
+			if !strings.Contains(err.Error(), "certificate") {
+				t.Fatalf("wanted a certificate rejection, got %v", err)
+			}
+		})
+	}
 	t.Run("wrong WireGuard PSK", func(t *testing.T) {
 		bad := cfg
 		bad.PresharedKey = base64.StdEncoding.EncodeToString(randomSharedKey(t))
@@ -134,6 +176,36 @@ func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version) {
 			t.Fatalf("wanted incomplete WireGuard handshake, got %v", err)
 		}
 	})
+}
+
+func newTLSConfig(t *testing.T, serverName string) (*tls.Config, *x509.CertPool) {
+	t.Helper()
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	certificate := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		DNSNames:     []string{serverName},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, certificate, certificate, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(root)
+	return &tls.Config{Certificates: []tls.Certificate{
+		{Certificate: [][]byte{der}, PrivateKey: privateKey},
+	}}, roots
 }
 
 func assertPacketRoundTrip(t *testing.T, ctx context.Context, client *Tunnel, server *memoryTUN, source, destination string, size int) {

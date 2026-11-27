@@ -27,14 +27,7 @@ type RelayConfig struct {
 	Version     Version
 }
 
-// ServeRelay owns listener and forwards authenticated envelopes to a loopback
-// WireGuard endpoint. Separate upstream sockets let WireGuard authenticate each
-// source address change using its own packet counters and handshake timestamps.
-func ServeRelay(ctx context.Context, listener *net.UDPConn, cfg RelayConfig) error {
-	if listener == nil {
-		return errors.New("relay requires a bound UDP socket")
-	}
-	defer listener.Close()
+func applyRelayDefaults(cfg *RelayConfig) error {
 	if !cfg.Upstream.Addr().Unmap().IsLoopback() || cfg.Upstream.Port() == 0 {
 		return errors.New("WireGuard upstream must be a loopback IP address with a nonzero port")
 	}
@@ -49,6 +42,20 @@ func ServeRelay(ctx context.Context, listener *net.UDPConn, cfg RelayConfig) err
 	}
 	if cfg.IdleTimeout < time.Second {
 		return errors.New("relay peer idle timeout must be at least one second")
+	}
+	return validateKey(cfg.Key)
+}
+
+// ServeRelay owns listener and forwards authenticated envelopes to a loopback
+// WireGuard endpoint. Separate upstream sockets let WireGuard authenticate each
+// source address change using its own packet counters and handshake timestamps.
+func ServeRelay(ctx context.Context, listener *net.UDPConn, cfg RelayConfig) error {
+	if listener == nil {
+		return errors.New("relay requires a bound UDP socket")
+	}
+	defer listener.Close()
+	if err := applyRelayDefaults(&cfg); err != nil {
+		return err
 	}
 	if cfg.Version == 0 {
 		cfg.Version = Version1

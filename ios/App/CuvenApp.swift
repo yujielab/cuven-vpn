@@ -214,29 +214,45 @@ private struct NetworkSettingsView: View {
 
             Section {
                 Toggle("高安全模式", isOn: $vpn.highSecurity)
-                if vpn.highSecurity {
-                    Toggle("阻止应用发出 UDP", isOn: $vpn.blockAppUDP)
-                } else {
+                if !vpn.highSecurity {
                     Toggle("阻止局域网访问", isOn: $vpn.blockLAN)
                     Toggle("防止应用绕过 VPN", isOn: $vpn.preventBypass)
                 }
             } footer: {
                 if vpn.highSecurity {
-                    Text("使用强制路由、隧道内 HTTPS DNS，并拦截可识别的 STUN/TURN。服务器需填写 IP，Cuven WG 需使用 v2 中继。")
-                    if vpn.blockAppUDP {
-                        Text("应用 UDP 已限制。HTTP/3、部分通话和游戏可能受影响。")
-                    } else {
-                        Text("拦截 STUN/TURN 可能影响通话。")
-                    }
+                    Text("强制路由和隧道内 HTTPS DNS。WebRTC 随 VPN 出口通行。服务器需填写 IP，Cuven WG 使用 v2 中继。")
                 } else {
                     Text("局域网开关控制隧道期间的本地网络访问。防绕过由 iOS 强制路由，部分系统流量仍由 iOS 处理。")
                 }
             }
             .disabled(!vpn.canEdit)
 
+            if vpn.highSecurity && vpn.transport == .cuvenWG {
+                Section {
+                    Toggle("HTTPS/3 载体", isOn: $vpn.https3Camouflage)
+                    if vpn.https3Camouflage {
+                        TextField("HTTPS 证书域名", text: $vpn.serverName)
+                            .cuvenPlainInput()
+                            .keyboardType(.URL)
+                    }
+                } footer: {
+                    Text("使用支持 HTTP/3 的 Cuven 中继。服务器端口需与中继一致，证书需受 iOS 信任。")
+                }
+                .disabled(!vpn.canEdit)
+            }
+
             Section {
                 if vpn.highSecurity {
-                    LabeledContent("DNS", value: "Cloudflare HTTPS")
+                    Toggle("自定义加密 DNS", isOn: $vpn.useEncryptedDNS)
+                    if vpn.useEncryptedDNS {
+                        TextField("HTTPS DNS URL", text: $vpn.encryptedDNSURL)
+                            .cuvenPlainInput()
+                            .keyboardType(.URL)
+                        TextField("解析器公网 IP，逗号分隔", text: $vpn.encryptedDNSBootstrap)
+                            .cuvenPlainInput()
+                    } else {
+                        LabeledContent("DNS", value: "Cloudflare HTTPS")
+                    }
                 } else {
                     Toggle("自定义 DNS", isOn: $vpn.useCustomDNS)
                 }
@@ -247,7 +263,7 @@ private struct NetworkSettingsView: View {
                 }
             } footer: {
                 if vpn.highSecurity {
-                    Text("通过 VPN 隧道连接 HTTPS 解析器。")
+                    Text("HTTPS DNS 经过 VPN 隧道。自定义解析器使用指定 IP 建立连接，并校验 URL 对应的证书。")
                 } else {
                     Text("支持 IPv4 和 IPv6 DNS。关闭时使用 Cuven 的默认 DNS。启用局域网阻止时请使用公网 DNS。查询通过隧道传输。")
                 }

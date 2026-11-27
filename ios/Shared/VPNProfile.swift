@@ -32,7 +32,8 @@ struct VPNProfile: Codable, Sendable, Equatable {
     let blockLAN: Bool
     let preventBypass: Bool
     let highSecurity: Bool
-    let blockAppUDP: Bool
+    let https3Camouflage: Bool
+    let encryptedDNS: EncryptedDNSProfile?
 
     var dnsServers: [String] { useCustomDNS ? customDNSServers : Self.defaultDNSServers }
 
@@ -51,7 +52,8 @@ struct VPNProfile: Codable, Sendable, Equatable {
         blockLAN: Bool = false,
         preventBypass: Bool = false,
         highSecurity: Bool = false,
-        blockAppUDP: Bool = false
+        https3Camouflage: Bool = false,
+        encryptedDNS: EncryptedDNSProfile? = nil
     ) throws {
         let host = Self.unbracket(host.trimmingCharacters(in: .whitespacesAndNewlines))
         let serverName = serverName?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -80,7 +82,8 @@ struct VPNProfile: Codable, Sendable, Equatable {
         self.blockLAN = blockLAN
         self.preventBypass = preventBypass
         self.highSecurity = highSecurity
-        self.blockAppUDP = blockAppUDP
+        self.https3Camouflage = highSecurity && transport == .cuvenWG && https3Camouflage
+        self.encryptedDNS = try encryptedDNS?.validated()
     }
 
     var endpoint: String {
@@ -89,7 +92,7 @@ struct VPNProfile: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case transport, wireGuard, host, port, serverName, customDNSServers, useCustomDNS, autoConnect
-        case requirePostQuantum, blockLAN, preventBypass, highSecurity, blockAppUDP
+        case requirePostQuantum, blockLAN, preventBypass, highSecurity, https3Camouflage, encryptedDNS
     }
 
     init(from decoder: any Decoder) throws {
@@ -107,7 +110,8 @@ struct VPNProfile: Codable, Sendable, Equatable {
             blockLAN: saved.decode(Bool.self, forKey: .blockLAN),
             preventBypass: saved.decode(Bool.self, forKey: .preventBypass),
             highSecurity: saved.decodeIfPresent(Bool.self, forKey: .highSecurity) ?? false,
-            blockAppUDP: saved.decodeIfPresent(Bool.self, forKey: .blockAppUDP) ?? false
+            https3Camouflage: saved.decodeIfPresent(Bool.self, forKey: .https3Camouflage) ?? false,
+            encryptedDNS: saved.decodeIfPresent(EncryptedDNSProfile.self, forKey: .encryptedDNS)
         )
     }
 
@@ -152,7 +156,7 @@ struct VPNProfile: Codable, Sendable, Equatable {
         }
     }
 
-    private static func unbracket(_ host: String) -> String {
+    static func unbracket(_ host: String) -> String {
         guard host.hasPrefix("["), host.hasSuffix("]") else { return host }
         return String(host.dropFirst().dropLast())
     }
@@ -165,7 +169,7 @@ struct VPNProfile: Codable, Sendable, Equatable {
         } && !host.utf8.contains(0)
     }
 
-    private static func isHost(_ host: String) -> Bool {
+    static func isHost(_ host: String) -> Bool {
         if isIP(host) { return true }
         let name = host.hasSuffix(".") ? String(host.dropLast()) : host
         guard (1...253).contains(name.utf8.count) else { return false }
@@ -227,6 +231,24 @@ struct WireGuardProfile: Codable, Sendable, Equatable {
     }
 }
 
+struct EncryptedDNSProfile: Codable, Sendable, Equatable {
+    let url: URL
+    let bootstrapServers: [String]
+
+    func validated() throws -> Self {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme?.lowercased() == "https", let host = parts.host,
+              VPNProfile.isHost(VPNProfile.unbracket(host)),
+              parts.port.map({ (1...65535).contains($0) }) ?? true,
+              parts.user == nil, parts.password == nil, parts.fragment == nil,
+              (1...4).contains(bootstrapServers.count),
+              bootstrapServers.allSatisfy(VPNProfile.isIP) else {
+            throw ProfileError.encryptedDNS
+        }
+        return self
+    }
+}
+
 struct WireGuardCredential: Codable, Sendable {
     let privateKey: String
     let relayKey: String
@@ -274,6 +296,7 @@ enum ProfileError: LocalizedError {
     case credential
     case wireGuard
     case numericSecurityEndpoint
+    case encryptedDNS
 
     var errorDescription: String? {
         switch self {
@@ -284,6 +307,7 @@ enum ProfileError: LocalizedError {
         case .unsupportedURI: "此链接含有首版未支持的参数。请使用标准 HY2 和受信任的 TLS 证书。"
         case .credential: "请输入有效的连接凭据。"
         case .numericSecurityEndpoint: "高安全模式需要填写服务器 IPv4 或 IPv6 地址。HY2 的证书域名可以填在 TLS 设置。"
+        case .encryptedDNS: "请填写 HTTPS DNS 的完整 URL，以及一到四个解析器 IPv4 或 IPv6 地址。"
         case .wireGuard: "请检查 Cuven WG 密钥和隧道地址。密钥应为 Base64 编码的 32 字节，隧道地址需包含前缀长度。"
         }
     }

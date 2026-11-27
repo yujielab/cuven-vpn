@@ -23,19 +23,33 @@ type probeAttempt struct {
 	ack   chan struct{}
 }
 
+type relayCarrier interface {
+	readPacket([]byte) ([]byte, error)
+	writePacket([]byte) error
+	localPort() uint16
+	Close() error
+}
+
+type relaySession struct {
+	relayCarrier
+	codec *cuventransport.Codec
+}
+
+type relayDial func(uint16) (*relaySession, error)
+
 type relayBind struct {
 	endpoint *conn.StdNetEndpoint
-	codec    *cuventransport.Codec
+	dial     relayDial
 
 	mu     sync.Mutex
-	socket *net.UDPConn
+	socket *relaySession
 	waiter atomic.Pointer[probeAttempt]
 }
 
 var _ conn.Bind = (*relayBind)(nil)
 
-func newRelayBind(endpoint netip.AddrPort, codec *cuventransport.Codec) *relayBind {
-	return &relayBind{endpoint: &conn.StdNetEndpoint{AddrPort: endpoint}, codec: codec}
+func newRelayBind(endpoint netip.AddrPort, dial relayDial) *relayBind {
+	return &relayBind{endpoint: &conn.StdNetEndpoint{AddrPort: endpoint}, dial: dial}
 }
 
 func (b *relayBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -44,7 +58,14 @@ func (b *relayBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	if b.socket != nil {
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
-	socket, err := net.DialUDP("udp", &net.UDPAddr{Port: int(port)}, net.UDPAddrFromAddrPort(b.endpoint.AddrPort))
+	if b.dial == nil {
+		return nil, 0, net.ErrClosed
+	}
+	dial := b.dial
+	// A reconnect creates a fresh Tunnel and reconnects with the latest
+	// network settings. Release the startup closure after this attempt.
+	b.dial = nil
+	socket, err := dial(port)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -55,16 +76,11 @@ func (b *relayBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 			return 0, io.ErrShortBuffer
 		}
 		for {
-			n, err := socket.Read(datagram[:])
-			if errors.Is(err, syscall.ECONNREFUSED) {
-				// A connected UDP socket can report ICMP after an early
-				// probe while the relay is starting. It remains usable.
-				continue
-			}
+			packet, err := socket.readPacket(datagram[:])
 			if err != nil {
 				return 0, err
 			}
-			kind, payload, err := b.codec.OpenTo(cuventransport.ServerToClient, packets[0][:0], datagram[:n])
+			kind, payload, err := socket.codec.OpenTo(cuventransport.ServerToClient, packets[0][:0], packet)
 			if err != nil {
 				continue
 			}
@@ -81,7 +97,7 @@ func (b *relayBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 			}
 		}
 	}
-	return []conn.ReceiveFunc{receive}, uint16(socket.LocalAddr().(*net.UDPAddr).Port), nil
+	return []conn.ReceiveFunc{receive}, socket.localPort(), nil
 }
 
 func (b *relayBind) Close() error {
@@ -131,12 +147,43 @@ func (b *relayBind) send(kind cuventransport.Kind, payload []byte) error {
 	if socket == nil {
 		return net.ErrClosed
 	}
-	packet, err := b.codec.Seal(cuventransport.ClientToServer, kind, payload)
+	packet, err := socket.codec.Seal(cuventransport.ClientToServer, kind, payload)
 	if err != nil {
 		return err
 	}
-	_, err = socket.Write(packet)
+	return socket.writePacket(packet)
+}
+
+type udpCarrier struct {
+	*net.UDPConn
+}
+
+func dialUDPRelay(endpoint netip.AddrPort, port uint16) (relayCarrier, error) {
+	socket, err := net.DialUDP("udp", &net.UDPAddr{Port: int(port)}, net.UDPAddrFromAddrPort(endpoint))
+	if err != nil {
+		return nil, err
+	}
+	return &udpCarrier{UDPConn: socket}, nil
+}
+
+func (s *udpCarrier) readPacket(buffer []byte) ([]byte, error) {
+	for {
+		n, err := s.Read(buffer)
+		// The socket remains usable if a probe arrived before the relay
+		// started and an ICMP rejection reached the socket.
+		if !errors.Is(err, syscall.ECONNREFUSED) {
+			return buffer[:n], err
+		}
+	}
+}
+
+func (s *udpCarrier) writePacket(packet []byte) error {
+	_, err := s.Write(packet)
 	return err
+}
+
+func (s *udpCarrier) localPort() uint16 {
+	return uint16(s.LocalAddr().(*net.UDPAddr).Port)
 }
 
 func (b *relayBind) probe(ctx context.Context) error {

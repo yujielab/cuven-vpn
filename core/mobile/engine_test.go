@@ -66,13 +66,14 @@ func TestWriteBatchPrivacyPolicy(t *testing.T) {
 	copy(stunPayload, []byte{0, 1, 0, 0, 0x21, 0x12, 0xa4, 0x42}) // STUN binding request
 	stun := udp(45000, stunPayload)
 	quic := udp(443, []byte{0xc0, 0, 0, 0, 1})
+	dns := udp(53, make([]byte, 12))
 	tcp := make([]byte, 20)
 	binary.BigEndian.PutUint16(tcp[0:2], 49152)
 	binary.BigEndian.PutUint16(tcp[2:4], 443)
 	tcp[12] = 0x50
 	https := ipv4(6, tcp)
 	var batch []byte
-	for _, packet := range [][]byte{stun, quic, https} {
+	for _, packet := range [][]byte{stun, quic, dns, https} {
 		batch = binary.BigEndian.AppendUint16(batch, uint16(len(packet)))
 		batch = append(batch, packet...)
 	}
@@ -82,10 +83,8 @@ func TestWriteBatchPrivacyPolicy(t *testing.T) {
 		policy packetPolicy
 		want   [][]byte
 	}{
-		{"normal", packetPolicy{}, [][]byte{stun, quic, https}},
-		{"normal with UDP option", packetPolicy{blockUDP: true}, [][]byte{stun, quic, https}},
-		{"high security", packetPolicy{filterPrivacy: true}, [][]byte{quic, https}},
-		{"high security with UDP block", packetPolicy{filterPrivacy: true, blockUDP: true}, [][]byte{https}},
+		{"normal", packetPolicy{}, [][]byte{stun, quic, dns, https}},
+		{"high security", packetPolicy{blockPlainDNS: true}, [][]byte{stun, quic, https}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			engine, sink := NewEngine(), &recordingTunnel{}
@@ -119,7 +118,7 @@ func TestStopBeforeStart(t *testing.T) {
 	engine := NewEngine()
 	engine.Stop()
 	engine.Stop()
-	if err := engine.Start("127.0.0.1:443", "test", "localhost", 0, 1380, false, false, false, false); !errors.Is(err, errEngineUsed) {
+	if err := engine.Start("127.0.0.1:443", "test", "localhost", 0, 1380, false, false, false); !errors.Is(err, errEngineUsed) {
 		t.Fatalf("Start after Stop returned %v", err)
 	}
 	if _, err := engine.ReadBatch(); !errors.Is(err, errEngineInactive) {
@@ -144,7 +143,7 @@ func TestStopCancelsStartup(t *testing.T) {
 	defer engine.Stop()
 	started := make(chan error, 1)
 	go func() {
-		started <- engine.Start(socket.LocalAddr().String(), "test", "localhost", 0, 1380, false, false, false, false)
+		started <- engine.Start(socket.LocalAddr().String(), "test", "localhost", 0, 1380, false, false, false)
 	}()
 	var packet [2048]byte
 	if _, _, err := socket.ReadFrom(packet[:]); err != nil {

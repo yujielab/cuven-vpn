@@ -43,9 +43,14 @@ struct TunnelNetworkPlan {
         let hasIPv6 = ipv6 != nil
         let servers: [String]
         if profile.highSecurity {
-            guard let url = URL(string: "https://cloudflare-dns.com/dns-query") else { throw ProfileError.dns }
-            dnsOverHTTPSURL = url
-            servers = ["1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"]
+            if let resolver = profile.encryptedDNS {
+                dnsOverHTTPSURL = resolver.url
+                servers = resolver.bootstrapServers
+            } else {
+                guard let url = URL(string: "https://cloudflare-dns.com/dns-query") else { throw ProfileError.dns }
+                dnsOverHTTPSURL = url
+                servers = ["1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"]
+            }
         } else {
             dnsOverHTTPSURL = nil
             servers = profile.dnsServers
