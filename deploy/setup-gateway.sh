@@ -34,15 +34,19 @@ done
 ((EUID == 0)) || fail '请使用 sudo bash 运行安装器。'
 [[ -d /run/systemd/system && -c /dev/net/tun ]] || fail '需要已启动 systemd 并启用 /dev/net/tun 的 Linux VPS。'
 command -v apt-get >/dev/null || fail '此安装器支持 Debian 和 Ubuntu。'
+installer_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 printf '%s\n' 'Cuven IP 网关安装与启动'
 if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
     "$custom_network" && fail '更改已有网关参数时请加 --reconfigure。'
+    unit=/etc/systemd/system/cuven-gateway.service
+    current_cert=$(sed -n 's/^LoadCredential=certificate://p' "$unit")
+    current_key=$(sed -n 's/^LoadCredential=private-key://p' "$unit")
     if [[ -n "$domain" ]]; then
-        current_cert=$(sed -n 's/^LoadCredential=certificate://p' /etc/systemd/system/cuven-gateway.service)
         if ! openssl x509 -in "$current_cert" -noout -checkhost "$domain" | grep -Fxq "Hostname $domain does match certificate"; then
             fail '已有网关证书与输入域名不匹配。更换配置请加 --reconfigure。'
         fi
     fi
+    bash "$installer_dir/install-certbot-hook.sh" "$current_cert" "$current_key"
     systemctl enable --now cuven-gateway.service
     systemctl is-active cuven-gateway.service
     printf '%s\n' '已有配置已启用，接入令牌保存在 /etc/cuven-gateway/token。'
@@ -71,8 +75,7 @@ else
             DEBIAN_FRONTEND=noninteractive apt-get install -y certbot
         fi
         certbot certonly --standalone --non-interactive --agree-tos "${contact[@]}" \
-            --cert-name "$domain" -d "$domain" \
-            --deploy-hook '/bin/sh -c "if systemctl is-active --quiet cuven-gateway.service; then systemctl restart cuven-gateway.service; fi"'
+            --cert-name "$domain" -d "$domain"
         if systemctl cat certbot.timer >/dev/null 2>&1; then
             systemctl enable --now certbot.timer
         fi
@@ -89,7 +92,6 @@ if [[ "$family" == auto ]]; then
 fi
 if [[ "$family" == 6 ]]; then args+=(--ipv6); fi
 printf '正在安装 %s，UDP %s，IPv%s 出口。\n' "$domain" "$port" "$family"
-installer_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 bash "$installer_dir/install-gateway.sh" "${args[@]}"
 systemctl is-active --quiet cuven-gateway.service || fail '服务尚未就绪。请查看 journalctl -u cuven-gateway。'
 printf '客户端网关 %s，UDP %s。读取接入令牌请运行 sudo cat /etc/cuven-gateway/token。\n' "$domain" "$port"

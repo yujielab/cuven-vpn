@@ -30,6 +30,12 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: go build ./cmd/cuven-gateway
+      - name: Test the Certbot renewal hook in a temporary filesystem
+        run: |
+          docker run --rm --read-only --network none --tmpfs /etc:exec --tmpfs /tmp:exec \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b \
+            bash /src/scripts/tests/test-certbot-hook.sh
 
   ios:
     name: iOS 27.2 tests on ${{ matrix.device }}

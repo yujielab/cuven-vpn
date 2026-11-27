@@ -188,6 +188,8 @@ if "$dual"; then
     printf '%s\n' 'net.ipv6.conf.all.forwarding=1' >>"$staging/forwarding.conf"
 fi
 
+bash "$repo/deploy/install-certbot-hook.sh" "$cert" "$key"
+
 install -d -m 0700 "$state"
 if [[ ! -e "$state/token" ]]; then
     openssl rand -base64 32 | tr '+/' '-_' | tr -d '=' >"$staging/token"
