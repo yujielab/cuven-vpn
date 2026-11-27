@@ -35,6 +35,7 @@ final class VPNController: ObservableObject {
     private var connectionRequested = false
     private var stoppingByUser = false
     private var pendingDisconnectReport: UUID?
+    private var preferencesNeedReload = false
 
     var canEdit: Bool {
         loaded && !busy && (status == .invalid || status == .disconnected)
@@ -89,6 +90,7 @@ final class VPNController: ObservableObject {
                     if let existing, existing.isOnDemandEnabled {
                         existing.isOnDemandEnabled = false
                         try await existing.saveToPreferences()
+                        preferencesNeedReload = true
                     }
                     error = "请填写 Cuven IP 网关和新的接入令牌。"
                 }
@@ -164,6 +166,7 @@ final class VPNController: ObservableObject {
         error = nil
         defer { busy = false }
         do {
+            try await reloadPreferencesIfNeeded(manager)
             let profile = try draftProfile()
             let sessionToken = once ? credential.trimmingCharacters(in: .whitespacesAndNewlines) : nil
             if let sessionToken { try VPNProfile.validateAccessToken(sessionToken) }
@@ -224,6 +227,7 @@ final class VPNController: ObservableObject {
             manager.isOnDemandEnabled = false
             do {
                 try await manager.saveToPreferences()
+                preferencesNeedReload = true
                 autoConnectPaused = true
             } catch {
                 manager.isOnDemandEnabled = true
@@ -329,7 +333,16 @@ final class VPNController: ObservableObject {
         autoConnectPaused = false
         apply(profile)
         refreshCredential()
+        // The write is committed even if the following read fails. Retry the
+        // read before the next save or start without rotating the token again.
+        preferencesNeedReload = true
+        try await reloadPreferencesIfNeeded(manager)
+    }
+
+    private func reloadPreferencesIfNeeded(_ manager: NETunnelProviderManager) async throws {
+        guard preferencesNeedReload else { return }
         try await manager.loadFromPreferences()
+        preferencesNeedReload = false
     }
 
     private static func onDemandRules(_ mode: AutoConnect) -> [NEOnDemandRule] {
