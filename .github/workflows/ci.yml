@@ -81,21 +81,10 @@ jobs:
         env:
           SIMULATOR_MODEL: ${{ matrix.device }}
         run: |
-          python3 - <<'PYTHON'
-          import json
-          import os
-          import subprocess
-
-          devices = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
-          runtime = devices["devices"].get("com.apple.CoreSimulator.SimRuntime.iOS-27-2", [])
-          matches = [device for device in runtime if device["name"] == os.environ["SIMULATOR_MODEL"]]
-          if len(matches) != 1:
-              raise SystemExit(f"Expected one {os.environ['SIMULATOR_MODEL']} on iOS 27.2, found {len(matches)}")
-          udid = matches[0]["udid"]
-          subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], check=True, timeout=300)
-          with open(os.environ["GITHUB_ENV"], "a") as env:
-              env.write(f"SIMULATOR_ID={udid}\n")
-          PYTHON
+          device_id=$(python3 scripts/select-ios-simulator.py "$SIMULATOR_MODEL" 27.2)
+          echo "Selected $SIMULATOR_MODEL ($device_id)"
+          xcrun simctl bootstatus "$device_id" -b
+          echo "SIMULATOR_ID=$device_id" >> "$GITHUB_ENV"
       - name: Install and launch Cuven independently of XCTest
         timeout-minutes: 3
         run: |
