@@ -115,7 +115,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
         if session.monitor == nil && !VPNProfile.isIP(profile.host) { startPathMonitor(session) }
-        startupResolver.start(host: profile.host, port: profile.port) { [weak self, weak session] result in
+        startupResolver.start(host: profile.host, port: profile.port, available: session.path?.available != false) { [weak self, weak session] result in
             guard let self, let session, self.session === session else { return }
             switch result {
             case .success(let resolved):
@@ -333,7 +333,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let engine = session.takeEngine()
         worker.async { engine?.stop() }
         if !session.routesInstalled {
-            if session.endpoints.hasUntriedAddress {
+            if session.endpoints.retryStartupResolution(after: failure) {
+                resolve(session)
+            } else if session.endpoints.hasUntriedAddress {
                 connect(session)
             } else {
                 terminate(session, failure: failure)
@@ -372,22 +374,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let previous = session.path
         let newPath = Session.PhysicalPath(available: available, interface: interface ?? previous?.interface)
         session.path = newPath
-        guard let previous else {
-            if !available && startupResolver.isPending { startupResolver.pathChanged(available: false) }
+        if let previous {
+            if available {
+                let switchedInterface = previous.interface != nil && interface != nil && previous.interface != interface
+                guard !previous.available || switchedInterface else { return }
+                session.reconnectAttempts = 0
+            }
+        } else if available || session.routesInstalled {
             return
-        }
-        if available {
-            let switchedInterface = previous.interface != nil && interface != nil && previous.interface != interface
-            guard !previous.available || switchedInterface else { return }
-            session.reconnectAttempts = 0
         }
 
         if startupResolver.isPending {
             startupResolver.pathChanged(available: available)
             return
         }
-        guard session.routesInstalled else { return }
         session.endpoints.pathChanged()
+        guard session.routesInstalled else { return }
         session.pendingRetry?.cancel()
         session.pendingRetry = nil
         if session.engine != nil {

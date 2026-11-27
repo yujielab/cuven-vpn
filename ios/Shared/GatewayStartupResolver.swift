@@ -25,13 +25,13 @@ final class GatewayStartupResolver {
         workers.maxConcurrentOperationCount = 2
     }
 
-    func start(host: String, port: Int, reply: @escaping Reply) {
+    func start(host: String, port: Int, available: Bool = true, reply: @escaping Reply) {
         cancel()
         request = (host, port, reply)
         let expiry = DispatchWorkItem { [weak self] in self?.finish(.failure(.resolutionTimeout)) }
         deadline = expiry
         state.asyncAfter(deadline: .now() + budget, execute: expiry)
-        pathChanged(available: true)
+        pathChanged(available: available)
     }
 
     func pathChanged(available: Bool) {

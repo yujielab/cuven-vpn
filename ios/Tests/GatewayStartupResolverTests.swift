@@ -2,6 +2,26 @@ import XCTest
 @testable import Cuven
 
 final class GatewayStartupResolverTests: XCTestCase {
+    func testOfflineRetryWaitsForAnAvailablePathBeforeResolving() {
+        let state = DispatchQueue(label: "test.resolver.offline-start")
+        let entered = DispatchSemaphore(value: 0)
+        let completed = expectation(description: "resolver resumed")
+        let resolver = GatewayStartupResolver(state: state) { _, _ in
+            entered.signal()
+            return ["new"]
+        }
+        state.sync {
+            resolver.start(host: "gateway.example", port: 4433, available: false) { result in
+                XCTAssertEqual(try? result.get(), ["new"])
+                completed.fulfill()
+            }
+        }
+        XCTAssertEqual(entered.wait(timeout: .now() + .milliseconds(100)), .timedOut)
+        state.sync { resolver.pathChanged(available: true) }
+        wait(for: [completed], timeout: 2)
+        XCTAssertEqual(entered.wait(timeout: .now()), .success)
+    }
+
     func testOneDeadlineWhilePathIsUnavailable() {
         let state = DispatchQueue(label: "test.resolver.state")
         let completed = expectation(description: "startup reported DNS timeout")

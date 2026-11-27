@@ -2,6 +2,35 @@ import XCTest
 @testable import Cuven
 
 final class GatewayEndpointsTests: XCTestCase {
+    func testColdDialRefreshesOnceAfterPathChangeAndRetriesIdenticalAnswersFromTheStart() {
+        var endpoints = GatewayEndpoints()
+        endpoints.replace(with: ["primary", "secondary"])
+        XCTAssertEqual(endpoints.next(), "primary")
+        XCTAssertFalse(endpoints.retryStartupResolution(after: .gatewayTimeout))
+        endpoints.pathChanged()
+        for failure in [TunnelFailure.gatewayRejected, .gatewayBusy, .certificateTrust, .cancelled, .settings] {
+            XCTAssertFalse(endpoints.retryStartupResolution(after: failure))
+        }
+        XCTAssertTrue(endpoints.retryStartupResolution(after: .gatewayTimeout))
+        XCTAssertNil(endpoints.next())
+        endpoints.replace(with: ["primary", "secondary"])
+        XCTAssertEqual(endpoints.next(), "primary")
+        endpoints.pathChanged()
+        XCTAssertFalse(endpoints.retryStartupResolution(after: .connection))
+        XCTAssertEqual(endpoints.next(), "secondary")
+    }
+
+    func testColdConnectionFailureDropsUntriedAddressesFromTheOldPath() {
+        var endpoints = GatewayEndpoints()
+        endpoints.replace(with: ["old", "old-backup"])
+        XCTAssertEqual(endpoints.next(), "old")
+        endpoints.pathChanged()
+        XCTAssertTrue(endpoints.retryStartupResolution(after: .connection))
+        XCTAssertFalse(endpoints.hasUntriedAddress)
+        endpoints.replace(with: ["new"])
+        XCTAssertEqual(endpoints.next(), "new")
+    }
+
     func testLookupFailureAndRepeatedDNSAnswerKeepWorkingRotation() throws {
         var endpoints = GatewayEndpoints()
         XCTAssertNil(endpoints.next())

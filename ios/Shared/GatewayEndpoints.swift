@@ -3,6 +3,8 @@ import Foundation
 /// The provider owns this state on its serial queue. A lookup may finish after
 /// the active path changed or after an attempt using the old list succeeded.
 struct GatewayEndpoints {
+    private enum StartupResolution { case current, stale, retried }
+    private var startupResolution = StartupResolution.current
     private var addresses: [String] = []
     private var nextIndex = 0
     private var pathID = UUID()
@@ -30,8 +32,21 @@ struct GatewayEndpoints {
     }
 
     mutating func pathChanged() {
+        if startupResolution == .current { startupResolution = .stale }
         pathID = UUID()
         nextLookup = nil
+    }
+
+    /// A failed cold dial may still be using an answer from the old interface.
+    /// Allow one fresh address list before returning the startup error to iOS.
+    mutating func retryStartupResolution(after failure: TunnelFailure) -> Bool {
+        guard startupResolution == .stale, failure == .connection || failure == .gatewayTimeout else {
+            return false
+        }
+        startupResolution = .retried
+        addresses.removeAll()
+        nextIndex = 0
+        return true
     }
 
     mutating func beginRefresh(now: DispatchTime = .now()) -> UUID? {
