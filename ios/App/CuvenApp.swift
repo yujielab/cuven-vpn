@@ -83,8 +83,16 @@ private struct ConnectionView: View {
                     SecureField(vpn.hasCredential ? "令牌已保存，输入以替换" : "网关接入令牌", text: $vpn.credential)
                         .cuvenSecureInput()
                         .accessibilityLabel("Cuven IP 接入令牌")
-                    if vpn.requiresAppStart {
-                        Text("签名未授权共享钥匙串。令牌已存入 App 钥匙串，请从 Cuven 内手动连接。")
+                    if vpn.offersOneTimeStart && !vpn.hasCredential && vpn.autoConnect == .off {
+                        Text("可仅为本次连接使用令牌。下次从 Cuven 连接时需要重新输入。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button("仅本次连接，不保存令牌") {
+                            Task { await vpn.save(connect: true, once: true) }
+                        }
+                        .disabled(!vpn.canStartOnce)
+                    } else if vpn.requiresAppStart {
+                        Text("此配置使用 App 启动凭据，请从 Cuven 内手动连接。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }

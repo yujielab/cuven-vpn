@@ -19,6 +19,7 @@ final class VPNController: ObservableObject {
     @Published var encryptedDNSTLSName = ""
     @Published var encryptedDNSBootstrap = ""
     @Published private(set) var autoConnectPaused = false
+    @Published private(set) var offersOneTimeStart = false
     @Published private(set) var requiresAppStart = false
     @Published private(set) var hasCredential = false
     @Published private(set) var status = NEVPNStatus.invalid
@@ -39,6 +40,10 @@ final class VPNController: ObservableObject {
     var canStart: Bool {
         canEdit && !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             (hasCredential || hasNewCredential)
+    }
+
+    var canStartOnce: Bool {
+        offersOneTimeStart && canStart && hasNewCredential && !hasCredential && autoConnect == .off
     }
 
     var canSave: Bool {
@@ -72,6 +77,7 @@ final class VPNController: ObservableObject {
                 savedProfile = profile
                 if profile.transport == .cuven {
                     requiresAppStart = configuration.providerConfiguration?[AppCredentialHandoff.modeKey] as? Bool == true
+                    offersOneTimeStart = configuration.providerConfiguration?[AppCredentialHandoff.sessionIDKey] is Data
                     credentialReference = Self.credentialReference(in: configuration)
                     apply(profile)
                     refreshCredential()
@@ -121,15 +127,17 @@ final class VPNController: ObservableObject {
         }
     }
 
-    func save(connect: Bool) async {
-        guard canStart, let manager else { return }
+    func save(connect: Bool, once: Bool = false) async {
+        guard canStart, let manager, !once || (connect && canStartOnce) else { return }
         busy = true
         error = nil
         defer { busy = false }
         do {
             let profile = try draftProfile()
+            let sessionToken = once ? credential.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+            if let sessionToken { try VPNProfile.validateAccessToken(sessionToken) }
             if profile != savedProfile || hasNewCredential || autoConnectPaused || !manager.isEnabled {
-                try await persist(profile, manager: manager)
+                try await persist(profile, manager: manager, once: once)
             }
             refreshStatus()
             if connect && (status == .invalid || status == .disconnected) {
@@ -137,12 +145,21 @@ final class VPNController: ObservableObject {
                     guard let configuration = manager.protocolConfiguration as? NETunnelProviderProtocol,
                           configuration.providerBundleIdentifier == (try Self.embeddedProviderID()),
                           configuration.providerConfiguration?[AppCredentialHandoff.modeKey] as? Bool == true,
-                          profile.autoConnect == .off, !manager.isOnDemandEnabled,
-                          let reference = credentialReference, reference == Self.credentialReference(in: configuration)
+                          profile.autoConnect == .off, !manager.isOnDemandEnabled
                     else { throw CredentialError.missing }
-                    let token = try KeychainCredential.load(reference: reference)
-                    let options = try AppCredentialHandoff.options(token: token, reference: reference)
+                    let options: [String: NSObject]
+                    if let sessionToken,
+                       let id = configuration.providerConfiguration?[AppCredentialHandoff.sessionIDKey] as? Data,
+                       Self.credentialReference(in: configuration) == nil {
+                        options = try AppCredentialHandoff.options(token: sessionToken, reference: id)
+                    } else if !once, let reference = credentialReference, reference == Self.credentialReference(in: configuration) {
+                        let token = try KeychainCredential.load(reference: reference)
+                        options = try AppCredentialHandoff.options(token: token, reference: reference)
+                    } else {
+                        throw CredentialError.missing
+                    }
                     try manager.connection.startVPNTunnel(options: options)
+                    if once { credential = "" }
                 } else {
                     try manager.connection.startVPNTunnel()
                 }
@@ -156,6 +173,9 @@ final class VPNController: ObservableObject {
             }
         } catch {
             refreshStatus()
+            if case CredentialError.appKeychain(errSecMissingEntitlement) = error {
+                offersOneTimeStart = true
+            }
             self.error = error.localizedDescription
         }
     }
@@ -181,14 +201,17 @@ final class VPNController: ObservableObject {
         refreshStatus()
     }
 
-    private func persist(_ profile: VPNProfile, manager: NETunnelProviderManager) async throws {
+    private func persist(_ profile: VPNProfile, manager: NETunnelProviderManager, once: Bool) async throws {
         let providerID = try Self.embeddedProviderID()
         let profileData = try JSONEncoder().encode(profile)
         let previous = manager.protocolConfiguration as? NETunnelProviderProtocol
         let previousReference = credentialReference
-        let reference: Data
+        let reference: Data?
         var appStart = requiresAppStart
-        if hasNewCredential || (appStart && profile.autoConnect != .off) {
+        if once {
+            reference = nil
+            appStart = true
+        } else if hasNewCredential || (appStart && profile.autoConnect != .off) {
             let token: String
             if hasNewCredential {
                 token = credential.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -201,8 +224,11 @@ final class VPNController: ObservableObject {
             do {
                 reference = try KeychainCredential.store(token)
                 appStart = false
-            } catch CredentialError.keychain(errSecMissingEntitlement) {
-                guard profile.autoConnect == .off else { throw CredentialError.sharedRequired }
+            } catch let failure as CredentialError where failure.sharedGroupUnavailable {
+                guard profile.autoConnect == .off else {
+                    if case .unresolvedSharedGroup = failure { throw failure }
+                    throw CredentialError.sharedRequired
+                }
                 reference = try KeychainCredential.storeForApp(token)
                 appStart = true
             }
@@ -218,11 +244,16 @@ final class VPNController: ObservableObject {
         configuration.providerBundleIdentifier = providerID
         configuration.serverAddress = profile.endpoint
         configuration.passwordReference = appStart ? nil : reference
-        configuration.providerConfiguration = [
+        var values: [String: Any] = [
             TunnelConfiguration.profileKey: profileData,
-            TunnelConfiguration.credentialKey: reference,
             AppCredentialHandoff.modeKey: appStart
         ]
+        if let reference {
+            values[TunnelConfiguration.credentialKey] = reference
+        } else {
+            values[AppCredentialHandoff.sessionIDKey] = Data(UUID().uuidString.utf8)
+        }
+        configuration.providerConfiguration = values
         configuration.includeAllNetworks = profile.usesFullRouting
         configuration.enforceRoutes = profile.blockLAN && !configuration.includeAllNetworks
         configuration.excludeLocalNetworks = !profile.requiresEncryptedDNS && !profile.blockLAN
@@ -248,13 +279,14 @@ final class VPNController: ObservableObject {
             manager.localizedDescription = previousDescription
             manager.onDemandRules = previousRules
             manager.isOnDemandEnabled = wasOnDemandEnabled
-            if reference != previousReference { KeychainCredential.remove(reference: reference) }
+            if let reference, reference != previousReference { KeychainCredential.remove(reference: reference) }
             throw error
         }
         if let previousReference, previousReference != reference {
             KeychainCredential.remove(reference: previousReference)
         }
-        credential = ""
+        if !once { credential = "" }
+        offersOneTimeStart = once
         credentialReference = reference
         requiresAppStart = appStart
         savedProfile = profile

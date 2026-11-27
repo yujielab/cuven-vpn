@@ -55,8 +55,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func begin(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) throws {
         guard session == nil, let configuration = protocolConfiguration as? NETunnelProviderProtocol,
               let values = configuration.providerConfiguration,
-              let profileData = values[TunnelConfiguration.profileKey] as? Data,
-              let credential = configuration.passwordReference ?? values[TunnelConfiguration.credentialKey] as? Data else {
+              let profileData = values[TunnelConfiguration.profileKey] as? Data else {
             throw TunnelFailure.configuration
         }
         let profile = try VPNProfile.decode(profileData)
@@ -73,10 +72,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         }
         let token: String
+        let reference = configuration.passwordReference ?? values[TunnelConfiguration.credentialKey] as? Data
+        let sessionID = values[AppCredentialHandoff.sessionIDKey] as? Data
         if values[AppCredentialHandoff.modeKey] as? Bool == true {
-            token = try AppCredentialHandoff.token(options: options, reference: credential, autoConnect: profile.autoConnect)
+            token = try AppCredentialHandoff.token(options: options, storedReference: reference, sessionID: sessionID, autoConnect: profile.autoConnect)
         } else {
-            token = try KeychainCredential.load(reference: credential)
+            guard let reference, sessionID == nil else { throw TunnelFailure.configuration }
+            token = try KeychainCredential.load(reference: reference)
         }
         let connection = try ConnectionProfile(profile: profile, token: token)
         let session = Session(connection: connection, completion: completionHandler)

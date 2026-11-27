@@ -20,37 +20,30 @@ enum KeychainCredential {
 
     static func storeForApp(_ credential: String) throws -> Data {
         try VPNProfile.validateAccessToken(credential)
-        guard let appID = Bundle.main.bundleIdentifier else { throw CredentialError.appKeychain }
         do {
-            let group = try accessGroupForCurrentSignature(appID)
-            return try add(credential, group: group)
-        } catch CredentialError.keychain(errSecMissingEntitlement) {
-            throw CredentialError.appKeychain
+            // Omit kSecAttrAccessGroup so Security selects the signed default group.
+            return try add(credential, group: nil)
+        } catch CredentialError.keychain(let status) {
+            throw CredentialError.appKeychain(status)
         }
     }
 
-    private static func add(_ credential: String, group: String) throws -> Data {
-        let account = UUID().uuidString
-        let item: [String: Any] = [
+    private static func add(_ credential: String, group: String?) throws -> Data {
+        var identity: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessGroup as String: group,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData as String: Data(credential.utf8),
-            kSecReturnPersistentRef as String: true
+            kSecAttrAccount as String: UUID().uuidString
         ]
+        if let group { identity[kSecAttrAccessGroup as String] = group }
+        var item = identity
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        item[kSecValueData as String] = Data(credential.utf8)
+        item[kSecReturnPersistentRef as String] = true
         var result: CFTypeRef?
         let status = SecItemAdd(item as CFDictionary, &result)
         guard status == errSecSuccess else { throw CredentialError.keychain(status) }
         guard let reference = result as? Data else {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: account,
-                kSecAttrAccessGroup as String: group
-            ]
-            SecItemDelete(query as CFDictionary)
+            SecItemDelete(identity as CFDictionary)
             throw CredentialError.missing
         }
         return reference
@@ -97,7 +90,7 @@ enum KeychainCredential {
         guard let attributes = result as? [String: Any],
               let defaultGroup = attributes[kSecAttrAccessGroup as String] as? String,
               let shared = KeychainAccessGroup.resolve(configured, defaultGroup: defaultGroup) else {
-            throw CredentialError.keychain(errSecMissingEntitlement)
+            throw CredentialError.unresolvedSharedGroup
         }
         return shared
     }
@@ -106,14 +99,25 @@ enum KeychainCredential {
 enum CredentialError: LocalizedError {
     case missing
     case keychain(OSStatus)
-    case appKeychain
+    case appKeychain(OSStatus)
     case sharedRequired
+    case unresolvedSharedGroup
     case providerMissing
+
+    var sharedGroupUnavailable: Bool {
+        switch self {
+        case .unresolvedSharedGroup, .keychain(errSecMissingEntitlement): true
+        default: false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
-        case .appKeychain:
-            "Cuven 无法写入 App 钥匙串（-34018）。请检查主 App 签名中的 application-identifier 和描述文件。"
+        case .appKeychain(let status):
+            "系统默认钥匙串写入失败（SecItemAdd，\(status)）。" +
+                (status == errSecMissingEntitlement ? "请核对重签后主 App 的 application-identifier 和描述文件。" : "")
+        case .unresolvedSharedGroup:
+            "无法从当前签名确定共享钥匙串组。请检查主 App 和扩展的 keychain-access-groups，或关闭自动连接后从 Cuven 内连接。"
         case .sharedRequired:
             "按需连接需要共享钥匙串（-34018）。请在连接设置中关闭自动连接以手动使用，或为 Cuven 和 CuvenTunnel 签入同一个 <App ID 前缀>.dev.cuven.vpn.shared 组。"
         case .providerMissing:

@@ -32,6 +32,18 @@ final class VPNProfileTests: XCTestCase {
         XCTAssertThrowsError(try AppCredentialHandoff.options(token: "invalid", reference: reference))
     }
 
+    func testOneTimeStartRejectsAnOldSessionAndUnattendedStarts() throws {
+        let id = Data(UUID().uuidString.utf8)
+        let token = String(Data(repeating: 2, count: 32).base64EncodedString().dropLast())
+        let options = try AppCredentialHandoff.options(token: token, reference: id)
+        XCTAssertEqual(try AppCredentialHandoff.token(options: options, storedReference: nil, sessionID: id, autoConnect: .off), token)
+        XCTAssertThrowsError(try AppCredentialHandoff.token(options: nil, storedReference: nil, sessionID: id, autoConnect: .off))
+        XCTAssertThrowsError(try AppCredentialHandoff.token(options: options, storedReference: nil, sessionID: Data([9]), autoConnect: .off))
+        XCTAssertThrowsError(try AppCredentialHandoff.token(options: options, storedReference: id, sessionID: id, autoConnect: .off))
+        XCTAssertThrowsError(try AppCredentialHandoff.token(options: options, storedReference: nil, sessionID: nil, autoConnect: .off))
+        XCTAssertThrowsError(try AppCredentialHandoff.token(options: options, storedReference: nil, sessionID: id, autoConnect: .all))
+    }
+
     func testCuvenProfileAndToken() throws {
         let token = String(Data(repeating: 255, count: 32).base64EncodedString().dropLast())
             .replacingOccurrences(of: "/", with: "_")

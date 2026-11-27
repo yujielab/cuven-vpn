@@ -2,6 +2,7 @@ import Foundation
 
 enum AppCredentialHandoff {
     static let modeKey = "RequiresAppStart"
+    static let sessionIDKey = "CuvenManualSessionID"
     private static let tokenKey = "CuvenStartToken"
     private static let referenceKey = "CuvenStartReference"
 
@@ -9,6 +10,15 @@ enum AppCredentialHandoff {
     static func options(token: String, reference: Data) throws -> [String: NSObject] {
         try VPNProfile.validateAccessToken(token)
         return [tokenKey: token as NSString, referenceKey: reference as NSData]
+    }
+
+    static func token(options: [String: NSObject]?, storedReference: Data?, sessionID: Data?, autoConnect: AutoConnect) throws -> String {
+        switch (storedReference, sessionID) {
+        case let (binding?, nil), let (nil, binding?):
+            return try token(options: options, reference: binding, autoConnect: autoConnect)
+        default:
+            throw StartError.openApp
+        }
     }
 
     static func token(options: [String: NSObject]?, reference: Data, autoConnect: AutoConnect) throws -> String {
@@ -22,6 +32,6 @@ enum AppCredentialHandoff {
 
     private enum StartError: LocalizedError {
         case openApp
-        var errorDescription: String? { "当前签名使用 App 钥匙串。请从 Cuven 内点「连接 VPN」。" }
+        var errorDescription: String? { "此配置需要从 Cuven 内手动连接。" }
     }
 }
