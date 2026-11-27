@@ -270,7 +270,7 @@ final class VPNController: ObservableObject {
         providerConfiguration[TunnelConfiguration.credentialKey] = reference
         configuration.providerConfiguration = providerConfiguration
         configuration.includeAllNetworks = profile.preventBypass
-        configuration.enforceRoutes = !profile.preventBypass
+        configuration.enforceRoutes = profile.blockLAN && !profile.preventBypass
         configuration.excludeLocalNetworks = !profile.blockLAN
 
         let wasEnabled = manager.isEnabled

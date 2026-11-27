@@ -113,6 +113,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let endpoint = session.endpoints[session.nextEndpoint % session.endpoints.count]
         session.nextEndpoint += 1
         session.engine = engine
+        if !session.routesInstalled && (session.nextEndpoint < session.endpoints.count || session.alternate != nil) {
+            let deadline = DispatchWorkItem { [weak self, weak session, weak engine] in
+                guard let self, let session, let engine, self.session === session, session.engine === engine else {
+                    return
+                }
+                self.connectionFailed(session)
+            }
+            session.attemptDeadline = deadline
+            state.asyncAfter(deadline: .now() + .seconds(8), execute: deadline)
+        }
         let connection = session.current
         let blockLAN = session.blockLAN
         worker.async {
@@ -146,6 +156,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             self.state.async {
                 guard self.session === session, session.engine === engine else { return }
+                session.clearAttemptDeadline()
                 guard connected else {
                     self.connectionFailed(session)
                     return
@@ -287,7 +298,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         monitor.start(queue: state)
     }
 
-    private func pathChanged(_ path: NWPath, session: Session) {
+    private func pathChanged(_ path: Network.NWPath, session: Session) {
         let available = path.status != .unsatisfied
         let interface = path.availableInterfaces.first { interface in
             switch interface.type {
@@ -395,6 +406,7 @@ private final class Session {
     var monitor: NWPathMonitor?
     var path: PhysicalPath?
     var pendingRetry: DispatchWorkItem?
+    var attemptDeadline: DispatchWorkItem?
 
     init(primary: ConnectionProfile, alternate: ConnectionProfile?, completion: @escaping (Error?) -> Void) {
         current = primary
@@ -410,7 +422,13 @@ private final class Session {
         callback?(error)
     }
 
+    func clearAttemptDeadline() {
+        attemptDeadline?.cancel()
+        attemptDeadline = nil
+    }
+
     func takeEngine() -> MobileEngine? {
+        clearAttemptDeadline()
         let current = engine
         engine = nil
         ready = false

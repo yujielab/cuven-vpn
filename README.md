@@ -29,8 +29,8 @@ open Cuven.xcodeproj
 
 ## 配置 Cuven WG
 
-1. 在服务端配置 WireGuard，服务端设置 `ListenPort = 51820`。为客户端生成独立的 WireGuard 密钥对，在服务端 Peer 中填入客户端公钥和客户端分配地址，例如 `AllowedIPs = 10.66.0.2/32, fd66::2/128`。按所需 IP 家族配置服务端转发和出口路由。通过防火墙限制原始 WireGuard 端口至本机，并向客户端开放中继 UDP 端口。
-2. 生成部署专用的 32 字节随机封装密钥。用你的服务管理器向 `CUVEN_RELAY_KEY` 注入标准 Base64 密钥，勿把密钥写入仓库。配置完成后启动中继。
+1. 在服务端配置 WireGuard，服务端设置 `ListenPort = 51820`，接口 MTU 设置为 `1280`（使用 `wg-quick` 时在 `[Interface]` 中填写 `MTU = 1280`）。为客户端生成独立的 WireGuard 密钥对，在服务端 Peer 中填入客户端公钥和客户端分配地址，例如 `AllowedIPs = 10.66.0.2/32, fd66::2/128`。按所需 IP 家族配置服务端转发和出口路由。通过防火墙限制原始 WireGuard 端口至本机，并向客户端开放中继 UDP 端口。
+2. 用 `openssl rand -base64 32` 生成部署专用的随机封装密钥。用你的服务管理器向 `CUVEN_RELAY_KEY` 注入标准 Base64 密钥，勿把密钥写入仓库。配置完成后启动中继。
 
    ```sh
    cd core
