@@ -1,4 +1,5 @@
 """Install the current test build and verify both installed Mach-O UUIDs."""
+import filecmp
 import os
 from pathlib import Path
 import plistlib
@@ -8,12 +9,23 @@ import sys
 import time
 
 
-def binary_uuid(binary):
-    output = subprocess.check_output(["xcrun", "dwarfdump", "--uuid", str(binary)], text=True, timeout=20)
-    values = set(re.findall(r"^UUID: ([0-9A-Fa-f-]{36}) \(([^)]+)\)", output, flags=re.M))
-    if not values:
-        raise RuntimeError(f"Missing Mach-O UUID for {binary.name}")
-    return values
+def verify_binaries(pairs):
+    # Simulator installations normally contain exact copies. Only a re-signed
+    # or thinned executable needs Apple's slower debug-tool inspection.
+    changed = [(source, target) for source, target in pairs if not filecmp.cmp(source, target, shallow=False)]
+    if not changed:
+        return
+    paths = [path.resolve() for pair in changed for path in pair]
+    output = subprocess.check_output(["xcrun", "dwarfdump", "--uuid", *map(str, paths)], text=True, timeout=100)
+    uuids = {path: set() for path in paths}
+    for value, arch, filename in re.findall(r"^UUID: ([0-9A-Fa-f-]{36}) \(([^)]+)\) (.+)$", output, flags=re.M):
+        if Path(filename) in uuids:
+            uuids[Path(filename)].add((value.lower(), arch))
+    for source, target in changed:
+        built = uuids[source.resolve()]
+        installed = uuids[target.resolve()]
+        if not installed or not installed.issubset(built):
+            raise RuntimeError(f"Simulator installed a different build of {source.name}")
 
 
 def install(device, app):
@@ -30,12 +42,13 @@ def install(device, app):
     ).strip()
     if not path or not Path(path).is_dir():
         raise RuntimeError("CoreSimulator did not report an installed application")
+    pairs = []
     for bundle in (Path("."), Path("PlugIns/CuvenTunnel.appex")):
         info = plistlib.loads((app / bundle / "Info.plist").read_bytes())
         executable = bundle / info["CFBundleExecutable"]
-        if binary_uuid(app / executable) != binary_uuid(Path(path) / executable):
-            raise RuntimeError(f"Simulator installed a different build of {executable.name}")
-    print("Verified installed app and Packet Tunnel build UUIDs.", flush=True)
+        pairs.append((app / executable, Path(path) / executable))
+    verify_binaries(pairs)
+    print("Verified the installed app and Packet Tunnel against this build.", flush=True)
 
 
 if __name__ == "__main__":
