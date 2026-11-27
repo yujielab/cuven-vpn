@@ -52,6 +52,21 @@ openssl req -x509 -key "$work/qa.key" -subj /CN=gateway.example -days 1 -out "$w
 # Stage the exact installer output without registering the production unit.
 cat >"$work/shim/systemctl" <<'SHIM'
 #!/bin/sh
+if [ -n "${CUVEN_TEST_LIVE_WORK:-}" ]; then
+    case "$1" in
+        daemon-reload)
+            "$CUVEN_TEST_LIVE_WORK/publish-unit" "$CUVEN_TEST_LIVE_WORK"
+            exec /usr/bin/systemctl daemon-reload ;;
+        start|stop|restart|is-active)
+            action=$1
+            shift
+            if [ "${1:-}" = --quiet ]; then shift; fi
+            [ "$1" = cuven-gateway.service ] || exit 2
+            exec /usr/bin/systemctl "$action" "${CUVEN_TEST_LIVE_WORK##*/}.service" ;;
+        is-enabled) echo disabled; exit 1 ;;
+        *) exit 2 ;;
+    esac
+fi
 if [ "$1" = restart ] && [ -e "$CUVEN_TEST_RESTART_FAULT" ]; then
     rm -- "$CUVEN_TEST_RESTART_FAULT"
     exit 75
@@ -106,6 +121,11 @@ in_network unshare --mount --propagation private -- bash -eu -c '
     if setup --reconfigure --port "$(cat "$work/occupied-port")" >"$work/collision.log" 2>&1; then exit 1; fi
     grep -Fq "无法绑定网关 UDP 地址" "$work/collision.log"
     [[ "$saved_files" == "$(sha256sum /etc/cuven-gateway/{token,firewall.nft,forwarding.conf,cuven-gateway,gateway-name} /etc/systemd/system/cuven-gateway.service)" ]]
+    mv /etc/cuven-gateway/token "$work/saved-token"
+    if setup --reconfigure --port 4513 >"$work/missing-token.log" 2>&1; then exit 1; fi
+    grep -Fq "未找到原接入令牌" "$work/missing-token.log"
+    [[ ! -e /etc/cuven-gateway/token && ! -e /etc/cuven-gateway/.reconfigure-previous ]]
+    mv "$work/saved-token" /etc/cuven-gateway/token
     # Model an older installed ELF while retaining the packaged release bytes.
     printf test >>/etc/cuven-gateway/cuven-gateway
     old_program=$(sha256sum /etc/cuven-gateway/cuven-gateway)
@@ -120,10 +140,24 @@ in_network unshare --mount --propagation private -- bash -eu -c '
 
 # Retain the generated credentials, sandbox, readiness and pre-start commands.
 # Scope the paths and network to this fixture before handing it to PID 1.
+cat >"$work/publish-unit" <<'PUBLISH'
+#!/usr/bin/env bash
+set -eu
+work=$1
+name=${work##*/}
+source="$work/etc/systemd/system/cuven-gateway.service"
+# Fail the proposed unit after nft and sysctl run, before its gateway becomes ready.
+filter=()
+if grep -Eq '^ExecStart=.* -listen :4513 ' "$source"; then
+    filter=(-e '/^ExecStart=/i ExecStartPre=/bin/false')
+fi
 sed -e "s|/etc/cuven-gateway|$work/etc/cuven-gateway|g" \
-    -e "/^\[Service\]$/a NetworkNamespacePath=/run/netns/$name" \
-    "$work/etc/systemd/system/cuven-gateway.service" >"$unit_file"
-chmod 0644 "$unit_file"
+    -e "/^\[Service\]$/a NetworkNamespacePath=/run/netns/$name" "${filter[@]}" \
+    "$source" >"/run/systemd/system/$name.service"
+chmod 0644 "/run/systemd/system/$name.service"
+PUBLISH
+chmod 0700 "$work/publish-unit"
+"$work/publish-unit" "$work"
 systemd-analyze verify "$unit_file"
 systemctl daemon-reload
 check_service() {
@@ -146,6 +180,24 @@ for _ in {1..100}; do
     sleep .02
 done
 [[ $(in_network ip -o link show cuven0) == *" mtu 1500 "* ]]
+old_rules=$(in_network nft --stateless list table inet cuven_gateway)
+in_network unshare --mount --propagation private -- bash -eu -c '
+    work=$1
+    mount --bind "$work/etc" /etc
+    mount --bind "$work/locks" /run/lock
+    export PATH="$work/shim:$PATH" CUVEN_TEST_LIVE_WORK="$work" CUVEN_TEST_FAULT="$work/unused"
+    installed=(/etc/cuven-gateway/{token,firewall.nft,forwarding.conf,cuven-gateway,gateway-name} /etc/systemd/system/cuven-gateway.service)
+    previous=$(sha256sum "${installed[@]}")
+    if bash "$work/pkg/deploy/setup-gateway.sh" --reconfigure --domain gateway.example --port 4513 \
+        --cert "$work/qa.crt" --key "$work/qa.key" --ipv4-only >"$work/late-error.log" 2>&1; then exit 1; fi
+    grep -Fq "Gateway startup failed" "$work/late-error.log"
+    grep -Fq "已恢复之前的网关配置和服务状态" "$work/late-error.log"
+    [[ "$previous" == "$(sha256sum "${installed[@]}")" && ! -e /etc/cuven-gateway/.reconfigure-previous ]]
+' bash "$work"
+check_service
+[[ "$old_rules" == "$(in_network nft --stateless list table inet cuven_gateway)" ]]
+in_network env SSL_CERT_FILE="$work/qa.crt" "$probe" "$work/etc/cuven-gateway/token"
+echo "Verified recovery after a late systemd start failure and authenticated again on the old port."
 first_pid=$(systemctl show "$unit" -p MainPID --value)
 token_before=$(sha256sum "$work/etc/cuven-gateway/token")
 systemctl restart "$unit"
