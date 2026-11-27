@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline signing-field check for locally re-signed Cuven IPAs."""
 import argparse
+import getpass
 import datetime as dt
 import mmap
 import plistlib
@@ -232,6 +233,8 @@ def checks(label, info, signed, profile, now):
             errors.append("描述文件尚未生效。")
         if field == "ExpirationDate" and now >= date:
             errors.append("描述文件已过期。")
+    if signed.get("get-task-allow") is True and allowed.get("get-task-allow") is not True:
+        errors.append("可执行文件签入了 get-task-allow 调试权限，描述文件未授权此权限。")
     ne = "com.apple.developer.networking.networkextension"
     if "packet-tunnel-provider" not in values(signed, ne) or not permits(values(allowed, ne), "packet-tunnel-provider"):
         errors.append("可执行文件签名和描述文件需要同时授权 packet-tunnel-provider。")
@@ -250,7 +253,30 @@ def checks(label, info, signed, profile, now):
     return bundle, team, group, errors, shared
 
 
-def inspect(path):
+def device_problems(profiles, device_udid=None):
+    errors, registered_sets = [], []
+    for label, profile in profiles:
+        if profile.get("ProvisionsAllDevices") is True:
+            continue
+        if "ProvisionedDevices" not in profile:
+            if device_udid is not None:
+                errors.append(f"{label} 的描述文件缺少直接安装到所选设备的授权。")
+            continue
+        entries = profile["ProvisionedDevices"]
+        if not isinstance(entries, list) or not all(isinstance(v, str) and v.strip() for v in entries):
+            raise InspectionError(f"{label} 描述文件的 ProvisionedDevices 无法解析。")
+        devices = {value.strip().casefold() for value in entries}
+        if not devices:
+            errors.append(f"{label} 描述文件中的已注册设备列表为空。")
+        elif device_udid is not None and device_udid.casefold() not in devices:
+            errors.append(f"{label} 描述文件未授权所选设备。")
+        registered_sets.append(devices)
+    if len(registered_sets) == 2 and all(registered_sets) and registered_sets[0].isdisjoint(registered_sets[1]):
+        errors.append("主 App 和扩展的描述文件没有共同授权的设备。")
+    return errors
+
+
+def inspect(path, device_udid=None):
     now = dt.datetime.now(dt.timezone.utc)
     problems, shared_problems = [], []
     with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory() as work:
@@ -259,7 +285,7 @@ def inspect(path):
         if len(roots) != 1:
             raise InspectionError("IPA 应包含一个主 App。")
         app_root = roots[0]
-        targets = []
+        targets, profiles = [], []
         for label, root in (("Cuven", app_root), ("CuvenTunnel", app_root + "/PlugIns/CuvenTunnel.appex")):
             info, signed, profile, signer_error = read_target(archive, counts, root, Path(work))
             bundle, team, group, errors, shared = checks(label, info, signed, profile, now)
@@ -273,6 +299,8 @@ def inspect(path):
             problems.extend(f"{label}：{msg}" for msg in errors)
             shared_problems.extend(f"{label}：{msg}" for msg in shared)
             targets.append((bundle, team, group))
+            profiles.append((label, profile))
+        problems.extend(device_problems(profiles, device_udid))
     app, tunnel = targets
     if not tunnel[0].startswith(app[0] + "."):
         problems.append("扩展 Bundle ID 必须以主 App 的 Bundle ID 和句点开头。")
@@ -283,8 +311,10 @@ def inspect(path):
     for message in problems + shared_problems:
         print("• " + message)
     if problems:
-        print("签名字段不匹配。请修正相应目标并重新签名。")
+        print("IPA 未通过检查。请核对以上目标的签名和描述文件。")
         return 1
+    if device_udid is not None:
+        print("两个目标的描述文件均覆盖所选设备。")
     if shared_problems:
         print("Packet Tunnel 签名字段匹配。可测试 App 内手动连接；按需连接仍缺少共享钥匙串授权。")
         return 3
@@ -295,10 +325,18 @@ def inspect(path):
 def main():
     parser = argparse.ArgumentParser(description="在本地核对重签后的 Cuven IPA。macOS 使用系统工具，Linux 需要 ldid 和 OpenSSL。")
     parser.add_argument("ipa", type=Path)
+    parser.add_argument("--check-device", action="store_true",
+                        help="从本机终端或标准输入读取 iPhone UDID，检查两个目标的直装授权")
     args = parser.parse_args()
     try:
-        return inspect(args.ipa)
-    except (OSError, zipfile.BadZipFile, KeyError, InspectionError, subprocess.TimeoutExpired) as exc:
+        device = None
+        if args.check_device:
+            value = getpass.getpass("本机输入 iPhone UDID（隐藏显示） ") if sys.stdin.isatty() else sys.stdin.readline()
+            device = value.strip()
+            if not re.fullmatch(r"[0-9A-Fa-f]{40}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}", device):
+                parser.error("请输入有效的 iPhone UDID。")
+        return inspect(args.ipa, device)
+    except (OSError, EOFError, zipfile.BadZipFile, KeyError, InspectionError, subprocess.TimeoutExpired) as exc:
         print(f"未完成签名字段检查：{exc}", file=sys.stderr)
         return 2
 

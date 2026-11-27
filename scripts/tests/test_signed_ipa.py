@@ -63,6 +63,40 @@ class SigningFields(unittest.TestCase):
         self.assertTrue(errors)
         self.assertTrue(shared)
 
+    def test_debugger_permission_needs_an_explicit_profile_grant(self):
+        info, signed, profile = fields()
+        signed["get-task-allow"] = True
+        for permission in (None, False, True):
+            if permission is not None:
+                profile["Entitlements"]["get-task-allow"] = permission
+            *_, errors, _ = signing.checks("App", info, signed, profile, NOW)
+            self.assertEqual(bool(errors), permission is not True)
+        signed["get-task-allow"] = False
+        *_, errors, _ = signing.checks("App", info, signed, profile, NOW)
+        self.assertFalse(errors)
+
+    def test_device_lists_must_admit_the_same_phone(self):
+        first, other = "A" * 40, "B" * 40
+        targets = [("App", {"ProvisionedDevices": [first, other]}),
+                   ("Extension", {"ProvisionedDevices": [first.lower()]})]
+        self.assertEqual(signing.device_problems(targets), [])
+        self.assertEqual(signing.device_problems(targets, first), [])
+        missing = signing.device_problems(targets, other)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("Extension", missing[0])
+        self.assertNotIn(other, missing[0])
+        targets[1][1]["ProvisionedDevices"] = ["C" * 40]
+        self.assertIn("没有共同", signing.device_problems(targets)[0])
+
+    def test_optional_device_check_respects_profile_distribution(self):
+        unrestricted = ("App", {"ProvisionsAllDevices": True})
+        store = ("Extension", {})
+        self.assertEqual(signing.device_problems([unrestricted, store]), [])
+        self.assertEqual(len(signing.device_problems([unrestricted, store], "A" * 40)), 1)
+        self.assertTrue(signing.device_problems([unrestricted, ("Extension", {"ProvisionedDevices": []})]))
+        with self.assertRaises(signing.InspectionError):
+            signing.device_problems([("App", {"ProvisionedDevices": [123]})])
+
     def test_expired_profile(self):
         info, signed, profile = fields()
         *_, errors, _ = signing.checks("App", info, signed, profile, NOW + dt.timedelta(days=2))
