@@ -28,12 +28,34 @@ def verify_binaries(pairs):
             raise RuntimeError(f"Simulator installed a different build of {source.name}")
 
 
+def install_on_device(device, app):
+    command = ["xcrun", "simctl", "install", device, str(app)]
+    deadline = time.monotonic() + 420
+    for attempt in range(2):
+        try:
+            result = subprocess.run(command, stderr=subprocess.PIPE, text=True,
+                                    timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            # CoreSimulator can finish installing before its client returns.
+            print("simctl install timed out. Checking the installed app and extension.", flush=True)
+            return False
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="", flush=True)
+        if result.returncode == 0:
+            return True
+        if (attempt or "domain=com.apple.CoreSimulator.SimError, code=405" not in result.stderr
+                or "current state: Shutdown" not in result.stderr):
+            result.check_returncode()
+        print("The selected simulator shut down after boot. Booting the same device and retrying installation.", flush=True)
+        subprocess.run(["xcrun", "simctl", "bootstatus", device, "-b"], check=True,
+                       timeout=min(180, max(0, deadline - time.monotonic())))
+
+
 def install(device, app):
     identifier = plistlib.loads((app / "Info.plist").read_bytes())["CFBundleIdentifier"]
     started = time.monotonic()
     installed = None
-    try:
-        subprocess.run(["xcrun", "simctl", "install", device, str(app)], check=True, timeout=420)
+    if install_on_device(device, app):
         print(f"simctl install returned after {time.monotonic() - started:.1f}s", flush=True)
         # On a successful install the default simulator device set normally
         # contains one matching bundle. Avoid launching another slow simctl.
@@ -49,9 +71,6 @@ def install(device, app):
                 matches.append(candidate.parent)
         if len(matches) == 1:
             installed = matches[0]
-    except subprocess.TimeoutExpired:
-        # CoreSimulator may finish installing before its command-line client returns.
-        print("simctl install timed out. Checking the installed app and extension.", flush=True)
     if installed is None:
         path = subprocess.check_output(
             ["xcrun", "simctl", "get_app_container", device, identifier, "app"], text=True, timeout=120
