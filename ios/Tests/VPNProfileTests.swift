@@ -81,6 +81,27 @@ final class VPNProfileTests: XCTestCase {
         guard case .https = plan.dnsMode else { return XCTFail("Cuven must use encrypted DNS by default") }
     }
 
+    func testUplinkBatchesPreserveOrderAndStopWritingAfterFailure() throws {
+        let plan = try TunnelNetworkPlan(profile: VPNProfile(host: "gateway.example", transport: .cuven))
+        let blockedIPv6 = Data([0x60, 0])
+        let packets = (0..<130).map { Data([0x45, UInt8($0)]) }
+        let input = Array(repeating: blockedIPv6, count: PacketBatch.maxPackets) + packets
+        var batches = [[Data]]()
+        try PacketBatch.send(input, mtu: 1500, plan: plan) {
+            batches.append(try XCTUnwrap(PacketBatch.decode($0, mtu: 1500)).packets)
+        }
+        XCTAssertEqual(batches.map(\.count), [64, 64, 2])
+        XCTAssertEqual(batches.flatMap { $0 }, packets)
+
+        enum Stopped: Error { case transport }
+        var writes = 0
+        XCTAssertThrowsError(try PacketBatch.send(input, mtu: 1500, plan: plan) { _ in
+            writes += 1
+            if writes == 2 { throw Stopped.transport }
+        })
+        XCTAssertEqual(writes, 2)
+    }
+
     func testHY2ImportPreservesPercentEncodedCredentialsAndIPv6() throws {
         let result = try VPNProfile.importURI("hy2://alice:pa%40ss%3Aword@[2001:db8::1]:8443/?sni=edge.example.com")
         XCTAssertEqual(result.profile.transport, .hy2)

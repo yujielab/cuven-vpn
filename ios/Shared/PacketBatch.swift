@@ -28,6 +28,18 @@ enum PacketBatch {
         return batch
     }
 
+    static func send(
+        _ packets: [Data], mtu: Int, plan: TunnelNetworkPlan, write: (Data) throws -> Void
+    ) rethrows {
+        for start in stride(from: 0, to: packets.count, by: maxPackets) {
+            let end = min(start + maxPackets, packets.count)
+            let batch = encode(
+                packets[start..<end], mtu: mtu, allowIPv4: plan.ipv4 != nil, allowIPv6: plan.ipv6 != nil
+            )
+            if !batch.isEmpty { try write(batch) }
+        }
+    }
+
     static func decode(_ batch: Data, mtu: Int) -> (packets: [Data], protocols: [NSNumber])? {
         guard !batch.isEmpty, batch.count <= maxPackets * (mtu + 2) else { return nil }
         var packets: [Data] = []

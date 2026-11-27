@@ -265,33 +265,32 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         packetFlow.readPackets { [weak self] packets, _ in
             guard let self else { return }
             self.state.async {
-                self.packetReadPending = false
-                if let session = self.session, session.id == sessionID, session.ready, let engine = session.engine {
-                    self.writeToCore(packets, session: session, engine: engine)
+                guard let session = self.session, session.id == sessionID, session.ready,
+                      let engine = session.engine, let mtu = session.installedMTU else {
+                    self.finishPacketRead()
+                    return
                 }
-                self.schedulePacketRead()
+                let plan = session.current.plan
+                // QUIC can block a writer under congestion. Keep one read in
+                // flight while leaving the state queue free to stop the engine.
+                self.worker.async {
+                    let sent = Result {
+                        try PacketBatch.send(packets, mtu: mtu, plan: plan) { try engine.writeBatch($0) }
+                    }
+                    self.state.async {
+                        if case .failure = sent, self.session === session, session.engine === engine {
+                            self.connectionFailed(session)
+                        }
+                        self.finishPacketRead()
+                    }
+                }
             }
         }
     }
 
-    private func writeToCore(_ packets: [Data], session: Session, engine: MobileEngine) {
-        guard let mtu = session.installedMTU else { return }
-        for start in stride(from: 0, to: packets.count, by: PacketBatch.maxPackets) {
-            let end = min(start + PacketBatch.maxPackets, packets.count)
-            let batch = PacketBatch.encode(
-                packets[start..<end],
-                mtu: mtu,
-                allowIPv4: session.current.plan.ipv4 != nil,
-                allowIPv6: session.current.plan.ipv6 != nil
-            )
-            guard !batch.isEmpty else { continue }
-            do {
-                try engine.writeBatch(batch)
-            } catch {
-                connectionFailed(session)
-                return
-            }
-        }
+    private func finishPacketRead() {
+        packetReadPending = false
+        schedulePacketRead()
     }
 
     private func readFromCore(_ session: Session, engine: MobileEngine) {
