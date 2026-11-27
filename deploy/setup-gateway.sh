@@ -9,38 +9,56 @@ ask() {
     IFS= read -r answer || fail '输入已结束。自动安装请传入 --domain，申请新证书时加 --accept-terms。'
     printf '%s' "$answer"
 }
-domain='' port=4433 family=auto cert='' key='' email=''
-accept_terms=false reconfigure=false custom_network=false
+domain='' port='' family=auto cert='' key='' email=''
+accept_terms=false reconfigure=false
 while (($#)); do
     case "$1" in
         --domain|--port|--cert|--key|--email)
             [[ -n "${2:-}" && "$2" != --* ]] || fail "$1 缺少参数。"
             case "$1" in
                 --domain) domain=$2 ;;
-                --port) port=$2; custom_network=true ;;
-                --cert) cert=$2; custom_network=true ;;
-                --key) key=$2; custom_network=true ;;
+                --port) port=$2 ;;
+                --cert) cert=$2 ;;
+                --key) key=$2 ;;
                 --email) email=$2 ;;
             esac
             shift 2 ;;
         --help) printf '%s\n' 'setup-gateway.sh [--domain HOST] [--accept-terms] [--email EMAIL] [--port PORT] [--cert PATH --key PATH] [--ipv6|--ipv4-only] [--reconfigure]'; exit 0 ;;
         --accept-terms) accept_terms=true; shift ;;
-        --ipv6) family=6; custom_network=true; shift ;;
-        --ipv4-only) family=4; custom_network=true; shift ;;
+        --ipv6) family=6; shift ;;
+        --ipv4-only) family=4; shift ;;
         --reconfigure) reconfigure=true; shift ;;
         *) fail "未知选项 $1，请查看 --help。" ;;
     esac
 done
+if [[ -n "$port" ]]; then
+    [[ "$port" =~ ^[0-9]{1,5}$ ]] || fail '端口必须是数字。'
+    port=$((10#$port))
+    (( port >= 1 && port <= 65535 )) || fail '端口必须在 1 到 65535 之间。'
+fi
 ((EUID == 0)) || fail '请使用 sudo bash 运行安装器。'
 [[ -d /run/systemd/system && -c /dev/net/tun ]] || fail '需要已启动 systemd 并启用 /dev/net/tun 的 Linux VPS。'
 command -v apt-get >/dev/null || fail '此安装器支持 Debian 和 Ubuntu。'
 installer_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 printf '%s\n' 'Cuven IP 网关安装与启动'
 if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
-    "$custom_network" && fail '更改已有网关参数时请加 --reconfigure。'
+    exec 9>/run/lock/cuven-gateway-install.lock
+    flock -n 9 || fail '另一个网关安装进程正在运行。'
     unit=/etc/systemd/system/cuven-gateway.service
     current_cert=$(sed -n 's/^LoadCredential=certificate://p' "$unit")
     current_key=$(sed -n 's/^LoadCredential=private-key://p' "$unit")
+    changed() { fail '更改已有网关参数时请加 --reconfigure。'; }
+    if [[ -n "$cert" || -n "$key" ]]; then
+        [[ "$cert" == "$current_cert" && "$key" == "$current_key" ]] || changed
+    fi
+    if [[ -n "$port" ]]; then
+        grep -Eq "^ExecStart=.* -listen :$port([[:space:]]|$)" "$unit" || changed
+    fi
+    if [[ "$family" != auto ]]; then
+        expected_ipv6=false
+        if [[ "$family" == 6 ]]; then expected_ipv6=true; fi
+        grep -Eq "^ExecStart=.* -ipv6=$expected_ipv6([[:space:]]|$)" "$unit" || changed
+    fi
     bash "$installer_dir/check-certificate-dates.sh" "$current_cert"
     if [[ -n "$domain" ]]; then
         if ! openssl x509 -in "$current_cert" -noout -checkhost "$domain" | grep -Fxq "Hostname $domain does match certificate"; then
@@ -55,8 +73,7 @@ if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
 fi
 if [[ -z "$domain" ]]; then domain=$(ask '请输入指向本机的网关域名'); fi
 [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ && "$domain" == *.* ]] || fail '域名格式无效。'
-[[ "$port" =~ ^[0-9]{1,5}$ ]] || fail '端口必须是数字。'
-((10#$port >= 1 && 10#$port <= 65535)) || fail '端口必须在 1 到 65535 之间。'
+port=${port:-4433}
 if [[ -n "$cert" || -n "$key" ]]; then
     [[ -r "$cert" && -r "$key" ]] || fail '--cert 和 --key 需要同时指定可读文件。'
 else

@@ -46,15 +46,32 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 # Stage the exact installer output without registering the production unit.
 cat >"$work/shim/systemctl" <<'SHIM'
 #!/bin/sh
-case "$1" in daemon-reload|enable|restart) exit 0 ;; *) exit 2 ;; esac
+case "$1" in daemon-reload|enable|restart|is-active) exit 0 ;; *) exit 2 ;; esac
 SHIM
-chmod 0700 "$work/shim/systemctl"
+cat >"$work/shim/install" <<'SHIM'
+#!/usr/bin/env bash
+if [[ -e "$CUVEN_TEST_FAULT" && "${!#}" == */firewall.nft ]]; then
+    rm -f -- "$CUVEN_TEST_FAULT"
+    exit 75
+fi
+exec /usr/bin/install "$@"
+SHIM
+chmod 0700 "$work/shim/systemctl" "$work/shim/install"
 in_network unshare --mount --propagation private -- bash -eu -c '
     work=$1
     mount --bind "$work/etc" /etc
     mount --bind "$work/locks" /run/lock
-    PATH="$work/shim:$PATH" bash "$work/pkg/deploy/install-gateway.sh" \
-        --domain gateway.example --cert "$work/qa.crt" --key "$work/qa.key"
+    export PATH="$work/shim:$PATH" CUVEN_TEST_FAULT="$work/fail-once"
+    args=(--domain gateway.example --port 4433 --cert "$work/qa.crt" --key "$work/qa.key" --ipv4-only)
+    setup(){ bash "$work/pkg/deploy/setup-gateway.sh" "${args[@]}" "$@"; }
+    touch "$CUVEN_TEST_FAULT"
+    if setup; then exit 1; else [[ $? == 75 ]]; fi
+    [[ ! -e /etc/cuven-gateway && ! -e /etc/systemd/system/cuven-gateway.service ]]
+    setup
+    token_before=$(sha256sum /etc/cuven-gateway/token)
+    setup
+    if setup --port 4513; then exit 1; fi
+    [[ "$token_before" == "$(sha256sum /etc/cuven-gateway/token)" ]]
 ' bash "$work"
 
 # Retain the generated credentials, sandbox, readiness and pre-start commands.
