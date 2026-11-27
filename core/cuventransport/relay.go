@@ -24,6 +24,7 @@ type RelayConfig struct {
 	Upstream    netip.AddrPort
 	MaxPeers    int
 	IdleTimeout time.Duration
+	Version     Version
 }
 
 // ServeRelay owns listener and forwards authenticated envelopes to a loopback
@@ -49,7 +50,10 @@ func ServeRelay(ctx context.Context, listener *net.UDPConn, cfg RelayConfig) err
 	if cfg.IdleTimeout < time.Second {
 		return errors.New("relay peer idle timeout must be at least one second")
 	}
-	codec, err := NewCodec(cfg.Key)
+	if cfg.Version == 0 {
+		cfg.Version = Version1
+	}
+	codec, err := NewCodecVersion(cfg.Key, cfg.Version)
 	if err != nil {
 		return err
 	}
@@ -67,7 +71,7 @@ func ServeRelay(ctx context.Context, listener *net.UDPConn, cfg RelayConfig) err
 	}()
 
 	var packet [MaxDatagramSize + 1]byte
-	var cleartext [MaxPayloadSize]byte
+	var cleartext [MaxDatagramSize]byte
 	var nextSweep time.Time
 	replays := newReplayCache(replayCapacity)
 	upstream := net.UDPAddrFromAddrPort(cfg.Upstream)
@@ -97,12 +101,12 @@ func ServeRelay(ctx context.Context, listener *net.UDPConn, cfg RelayConfig) err
 			continue
 		}
 		if kind == Probe {
-			if ack, err := codec.Seal(ServerToClient, ProbeAck, payload); err == nil {
+			if ack, err := codec.sealProbeAck(payload, n); err == nil {
 				_, _ = listener.WriteToUDPAddrPort(ack, remote)
 			}
 			continue
 		}
-		if !isWireGuardFrame(payload) || !replays.add(packet[nonceStart:headerSize]) {
+		if !isWireGuardFrame(payload) || !replays.add(codec.nonce(packet[:n])) {
 			continue
 		}
 		remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())

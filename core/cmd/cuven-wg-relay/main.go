@@ -22,16 +22,20 @@ func main() {
 	upstream := flag.String("upstream", "127.0.0.1:51820", "WireGuard loopback UDP endpoint")
 	maxPeers := flag.Int("max-peers", 64, "maximum concurrent upstream sessions")
 	idle := flag.Duration("idle-timeout", time.Minute, "evict a session after this much time without client data")
+	version := flag.Int("envelope-version", 1, "Cuven envelope version (1 or 2)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *listen, *upstream, *maxPeers, *idle); err != nil {
+	if err := run(ctx, *listen, *upstream, *maxPeers, *idle, *version); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, listen, upstream string, maxPeers int, idle time.Duration) error {
+func run(ctx context.Context, listen, upstream string, maxPeers int, idle time.Duration, version int) error {
+	if version != int(cuventransport.Version1) && version != int(cuventransport.Version2) {
+		return errors.New("-envelope-version must be 1 or 2")
+	}
 	key, err := decodeRelayKey(os.Getenv("CUVEN_RELAY_KEY"))
 	if err != nil {
 		return err
@@ -48,9 +52,10 @@ func run(ctx context.Context, listen, upstream string, maxPeers int, idle time.D
 	if err != nil {
 		return err
 	}
-	log.Printf("Cuven WireGuard relay listening on %s", conn.LocalAddr())
+	log.Printf("Cuven WireGuard relay listening on %s using envelope version %d", conn.LocalAddr(), version)
 	return cuventransport.ServeRelay(ctx, conn, cuventransport.RelayConfig{
 		Key: key, Upstream: upstreamAddress, MaxPeers: maxPeers, IdleTimeout: idle,
+		Version: cuventransport.Version(version),
 	})
 }
 

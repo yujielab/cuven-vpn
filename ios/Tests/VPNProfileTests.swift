@@ -17,6 +17,23 @@ final class VPNProfileTests: XCTestCase {
         XCTAssertThrowsError(try VPNProfile.importURI("hy2://a%0Ab@edge.example.com"))
     }
 
+    func testHighSecurityRequiresAnIPButAllowsASeparateTLSName() throws {
+        XCTAssertThrowsError(try VPNProfile(host: "edge.example.com", highSecurity: true))
+        let profile = try VPNProfile(host: "2001:db8::1", serverName: "edge.example.com", highSecurity: true)
+        let decoded = try VPNProfile.decode(JSONEncoder().encode(profile))
+        XCTAssertTrue(decoded.highSecurity)
+        XCTAssertEqual(decoded.serverName, "edge.example.com")
+    }
+
+    func testLegacyProfileLoadsWithHighSecurityOff() throws {
+        let profile = try VPNProfile(host: "edge.example.com")
+        let data = try JSONEncoder().encode(profile)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        fields.removeValue(forKey: "highSecurity")
+        let previous = try JSONSerialization.data(withJSONObject: fields)
+        XCTAssertEqual(try VPNProfile.decode(previous), profile)
+    }
+
     func testWireGuardProfileAndCredentialValidation() throws {
         let publicKey = Data(repeating: 1, count: 32).base64EncodedString()
         let relayKey = Data(repeating: 2, count: 32).base64EncodedString()

@@ -23,6 +23,16 @@ import (
 )
 
 func TestTunnelThroughCuvenRelay(t *testing.T) {
+	t.Run("v1", func(t *testing.T) {
+		testTunnelThroughCuvenRelay(t, cuventransport.Version1)
+	})
+	t.Run("v2", func(t *testing.T) {
+		testTunnelThroughCuvenRelay(t, cuventransport.Version2)
+	})
+}
+
+func testTunnelThroughCuvenRelay(t *testing.T, version cuventransport.Version) {
+	t.Helper()
 	const mtu = 1280
 	clientKey := newWireGuardKey(t)
 	serverKey := newWireGuardKey(t)
@@ -50,7 +60,7 @@ func TestTunnelThroughCuvenRelay(t *testing.T) {
 	relayErr := make(chan error, 1)
 	go func() {
 		relayErr <- cuventransport.ServeRelay(relayCtx, listener, cuventransport.RelayConfig{
-			Key: relayKey, Upstream: serverAddr,
+			Key: relayKey, Upstream: serverAddr, Version: version,
 		})
 	}()
 	defer func() {
@@ -66,6 +76,7 @@ func TestTunnelThroughCuvenRelay(t *testing.T) {
 		PeerPublicKey: base64.StdEncoding.EncodeToString(serverKey.PublicKey().Bytes()),
 		PresharedKey:  base64.StdEncoding.EncodeToString(psk),
 		TransportKey:  base64.RawStdEncoding.EncodeToString(relayKey),
+		Camouflage:    version == cuventransport.Version2,
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -90,6 +101,20 @@ func TestTunnelThroughCuvenRelay(t *testing.T) {
 		if err == nil {
 			invalid.Close()
 			t.Fatal("relay accepted an incorrect transport key")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "Cuven relay probe") {
+			t.Fatalf("wanted missing authenticated probe, got %v", err)
+		}
+	})
+	t.Run("wrong relay version", func(t *testing.T) {
+		bad := cfg
+		bad.Camouflage = !cfg.Camouflage
+		short, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+		defer cancel()
+		invalid, err := Open(short, bad, mtu)
+		if err == nil {
+			invalid.Close()
+			t.Fatal("relay accepted an incompatible transport version")
 		}
 		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "Cuven relay probe") {
 			t.Fatalf("wanted missing authenticated probe, got %v", err)

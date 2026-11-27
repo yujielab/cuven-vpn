@@ -22,6 +22,7 @@ final class VPNController: ObservableObject {
     @Published var requirePostQuantum = false
     @Published var blockLAN = false
     @Published var preventBypass = false
+    @Published var highSecurity = false
     @Published private(set) var autoConnectPaused = false
     @Published private(set) var hasCredential = false
     @Published private(set) var status = NEVPNStatus.invalid
@@ -55,11 +56,11 @@ final class VPNController: ObservableObject {
     }
 
     var hasAlternateTransport: Bool {
-        enrollments.keys.contains { $0 != transport }
+        enrollments.values.contains { $0.profile.transport != transport && !$0.profile.highSecurity }
     }
 
     private var wantsFallback: Bool {
-        automaticFallback && hasAlternateTransport && !requirePostQuantum
+        automaticFallback && !highSecurity && !requirePostQuantum && hasAlternateTransport
     }
 
     var canSave: Bool {
@@ -168,6 +169,7 @@ final class VPNController: ObservableObject {
             requirePostQuantum = false
             blockLAN = false
             preventBypass = false
+            highSecurity = false
         }
         refreshCredential()
         error = nil
@@ -269,9 +271,13 @@ final class VPNController: ObservableObject {
         configuration.passwordReference = reference
         providerConfiguration[TunnelConfiguration.credentialKey] = reference
         configuration.providerConfiguration = providerConfiguration
-        configuration.includeAllNetworks = profile.preventBypass
-        configuration.enforceRoutes = profile.blockLAN && !profile.preventBypass
-        configuration.excludeLocalNetworks = !profile.blockLAN
+        configuration.includeAllNetworks = profile.highSecurity || profile.preventBypass
+        configuration.enforceRoutes = profile.blockLAN && !configuration.includeAllNetworks
+        configuration.excludeLocalNetworks = !profile.highSecurity && !profile.blockLAN
+        if profile.highSecurity {
+            configuration.excludeAPNs = false
+            configuration.excludeCellularServices = false
+        }
 
         let wasEnabled = manager.isEnabled
         let previousDescription = manager.localizedDescription
@@ -340,7 +346,7 @@ final class VPNController: ObservableObject {
             host: host, transport: transport, wireGuard: wireGuard, port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 0,
             serverName: serverName, customDNSServers: Self.splitList(dns), useCustomDNS: useCustomDNS,
             autoConnect: autoConnect, requirePostQuantum: requirePostQuantum,
-            blockLAN: blockLAN, preventBypass: preventBypass
+            blockLAN: blockLAN, preventBypass: preventBypass, highSecurity: highSecurity
         )
     }
 
@@ -390,5 +396,6 @@ final class VPNController: ObservableObject {
         requirePostQuantum = profile.requirePostQuantum
         blockLAN = profile.blockLAN
         preventBypass = profile.preventBypass
+        highSecurity = profile.highSecurity
     }
 }

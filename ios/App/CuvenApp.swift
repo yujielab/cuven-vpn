@@ -194,9 +194,9 @@ private struct NetworkSettingsView: View {
 
             Section {
                 Toggle("自动回退协议", isOn: $vpn.automaticFallback)
-                    .disabled(!vpn.hasAlternateTransport || vpn.requirePostQuantum)
+                    .disabled(!vpn.hasAlternateTransport || vpn.requirePostQuantum || vpn.highSecurity)
             } footer: {
-                Text("保存两种协议的服务器设置后可启用。首选服务器连接失败时尝试另一种协议；要求后量子密钥交换时保持 HY2。")
+                Text("保存两种协议的普通模式配置后可启用。首选服务器连接失败时尝试另一种协议。高安全模式和严格后量子模式保持使用当前协议。")
             }
             .disabled(!vpn.canEdit)
 
@@ -213,22 +213,37 @@ private struct NetworkSettingsView: View {
             }
 
             Section {
-                Toggle("阻止局域网访问", isOn: $vpn.blockLAN)
-                Toggle("防止应用绕过 VPN", isOn: $vpn.preventBypass)
+                Toggle("高安全模式", isOn: $vpn.highSecurity)
+                if !vpn.highSecurity {
+                    Toggle("阻止局域网访问", isOn: $vpn.blockLAN)
+                    Toggle("防止应用绕过 VPN", isOn: $vpn.preventBypass)
+                }
             } footer: {
-                Text("局域网开关控制隧道期间的本地网络访问。防绕过由 iOS 强制路由，部分系统流量仍由 iOS 处理。")
+                if vpn.highSecurity {
+                    Text("使用强制路由、隧道内 HTTPS DNS，并拦截可识别的 STUN/TURN。部分通话可能失败。服务器需填写 IP，Cuven WG 需使用 v2 中继。")
+                } else {
+                    Text("局域网开关控制隧道期间的本地网络访问。防绕过由 iOS 强制路由，部分系统流量仍由 iOS 处理。")
+                }
             }
             .disabled(!vpn.canEdit)
 
             Section {
-                Toggle("自定义 DNS", isOn: $vpn.useCustomDNS)
-                if vpn.useCustomDNS {
+                if vpn.highSecurity {
+                    LabeledContent("DNS", value: "Cloudflare HTTPS")
+                } else {
+                    Toggle("自定义 DNS", isOn: $vpn.useCustomDNS)
+                }
+                if !vpn.highSecurity && vpn.useCustomDNS {
                     TextField("DNS 地址，逗号分隔", text: $vpn.dns)
                         .cuvenPlainInput()
                         .accessibilityLabel("自定义 DNS 服务器地址")
                 }
             } footer: {
-                Text("支持 IPv4 和 IPv6 DNS。关闭时使用 Cuven 的默认 DNS。启用局域网阻止时请使用公网 DNS。查询通过隧道传输。")
+                if vpn.highSecurity {
+                    Text("通过 VPN 隧道连接 HTTPS 解析器。")
+                } else {
+                    Text("支持 IPv4 和 IPv6 DNS。关闭时使用 Cuven 的默认 DNS。启用局域网阻止时请使用公网 DNS。查询通过隧道传输。")
+                }
             }
             .disabled(!vpn.canEdit)
 

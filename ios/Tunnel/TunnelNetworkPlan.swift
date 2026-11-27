@@ -17,6 +17,7 @@ struct TunnelNetworkPlan {
     let ipv4: Address?
     let ipv6: Address?
     let dnsServers: [String]
+    let dnsOverHTTPSURL: URL?
 
     init(profile: VPNProfile) throws {
         if let wireGuard = profile.wireGuard {
@@ -40,7 +41,16 @@ struct TunnelNetworkPlan {
         }
         let hasIPv4 = ipv4 != nil
         let hasIPv6 = ipv6 != nil
-        dnsServers = profile.dnsServers.filter { server in
+        let servers: [String]
+        if profile.highSecurity {
+            guard let url = URL(string: "https://cloudflare-dns.com/dns-query") else { throw ProfileError.dns }
+            dnsOverHTTPSURL = url
+            servers = ["1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"]
+        } else {
+            dnsOverHTTPSURL = nil
+            servers = profile.dnsServers
+        }
+        dnsServers = servers.filter { server in
             server.contains(":") ? hasIPv6 : hasIPv4
         }
         guard !dnsServers.isEmpty else { throw ProfileError.dns }

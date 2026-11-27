@@ -31,6 +31,7 @@ struct VPNProfile: Codable, Sendable, Equatable {
     let requirePostQuantum: Bool
     let blockLAN: Bool
     let preventBypass: Bool
+    let highSecurity: Bool
 
     var dnsServers: [String] { useCustomDNS ? customDNSServers : Self.defaultDNSServers }
 
@@ -47,13 +48,15 @@ struct VPNProfile: Codable, Sendable, Equatable {
         autoConnect: AutoConnect = .off,
         requirePostQuantum: Bool = false,
         blockLAN: Bool = false,
-        preventBypass: Bool = false
+        preventBypass: Bool = false,
+        highSecurity: Bool = false
     ) throws {
         let host = Self.unbracket(host.trimmingCharacters(in: .whitespacesAndNewlines))
         let serverName = serverName?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Self.isHost(host), (1...65535).contains(port) else {
             throw ProfileError.endpoint
         }
+        if highSecurity && !Self.isIP(host) { throw ProfileError.numericSecurityEndpoint }
         if let serverName, !serverName.isEmpty, !Self.isHost(serverName) {
             throw ProfileError.serverName
         }
@@ -74,27 +77,38 @@ struct VPNProfile: Codable, Sendable, Equatable {
         self.requirePostQuantum = transport == .hy2 && requirePostQuantum
         self.blockLAN = blockLAN
         self.preventBypass = preventBypass
+        self.highSecurity = highSecurity
     }
 
     var endpoint: String {
         host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
     }
 
-    static func decode(_ data: Data) throws -> Self {
-        let profile = try JSONDecoder().decode(Self.self, from: data)
-        return try Self(
-            host: profile.host,
-            transport: profile.transport,
-            wireGuard: try profile.wireGuard?.validated(),
-            port: profile.port,
-            serverName: profile.serverName,
-            customDNSServers: profile.customDNSServers,
-            useCustomDNS: profile.useCustomDNS,
-            autoConnect: profile.autoConnect,
-            requirePostQuantum: profile.requirePostQuantum,
-            blockLAN: profile.blockLAN,
-            preventBypass: profile.preventBypass
+    private enum CodingKeys: String, CodingKey {
+        case transport, wireGuard, host, port, serverName, customDNSServers, useCustomDNS, autoConnect
+        case requirePostQuantum, blockLAN, preventBypass, highSecurity
+    }
+
+    init(from decoder: any Decoder) throws {
+        let saved = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            host: saved.decode(String.self, forKey: .host),
+            transport: saved.decode(VPNTransport.self, forKey: .transport),
+            wireGuard: saved.decodeIfPresent(WireGuardProfile.self, forKey: .wireGuard)?.validated(),
+            port: saved.decode(Int.self, forKey: .port),
+            serverName: saved.decodeIfPresent(String.self, forKey: .serverName),
+            customDNSServers: saved.decode([String].self, forKey: .customDNSServers),
+            useCustomDNS: saved.decode(Bool.self, forKey: .useCustomDNS),
+            autoConnect: saved.decode(AutoConnect.self, forKey: .autoConnect),
+            requirePostQuantum: saved.decode(Bool.self, forKey: .requirePostQuantum),
+            blockLAN: saved.decode(Bool.self, forKey: .blockLAN),
+            preventBypass: saved.decode(Bool.self, forKey: .preventBypass),
+            highSecurity: saved.decodeIfPresent(Bool.self, forKey: .highSecurity) ?? false
         )
+    }
+
+    static func decode(_ data: Data) throws -> Self {
+        try JSONDecoder().decode(Self.self, from: data)
     }
 
     static func importURI(_ text: String) throws -> (profile: Self, credential: String) {
@@ -255,6 +269,7 @@ enum ProfileError: LocalizedError {
     case unsupportedURI
     case credential
     case wireGuard
+    case numericSecurityEndpoint
 
     var errorDescription: String? {
         switch self {
@@ -264,6 +279,7 @@ enum ProfileError: LocalizedError {
         case .uri: "请输入有效的 hysteria2:// 或 hy2:// 链接。"
         case .unsupportedURI: "此链接含有首版未支持的参数。请使用标准 HY2 和受信任的 TLS 证书。"
         case .credential: "请输入有效的连接凭据。"
+        case .numericSecurityEndpoint: "高安全模式需要填写服务器 IPv4 或 IPv6 地址。HY2 的证书域名可以填在 TLS 设置。"
         case .wireGuard: "请检查 Cuven WG 密钥和隧道地址。密钥应为 Base64 编码的 32 字节，隧道地址需包含前缀长度。"
         }
     }

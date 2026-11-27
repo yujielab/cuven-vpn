@@ -32,6 +32,9 @@ type Config struct {
 	PeerPublicKey string
 	PresharedKey  string
 	TransportKey  string
+	// Camouflage selects the encrypted, padded v2 envelope. The relay must
+	// use the same version.
+	Camouflage bool
 }
 
 type Tunnel struct {
@@ -68,7 +71,12 @@ func Open(ctx context.Context, cfg Config, mtu int) (*Tunnel, error) {
 		}
 		pskLine = "preshared_key=" + hex.EncodeToString(psk[:]) + "\n"
 	}
-	codec, err := cuventransport.NewCodec(sharedKey[:])
+	version := cuventransport.Version1
+	if cfg.Camouflage {
+		version = cuventransport.Version2
+	}
+	codec, err := cuventransport.NewCodecVersion(sharedKey[:], version)
+	clear(sharedKey[:])
 	if err != nil {
 		return nil, err
 	}

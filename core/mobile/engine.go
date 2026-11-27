@@ -51,7 +51,12 @@ type session struct {
 	transport io.Closer
 	tunnel    packetTunnel
 	mtu       int
-	filterLAN bool
+	policy    packetPolicy
+}
+
+type packetPolicy struct {
+	blockLAN      bool
+	filterPrivacy bool
 }
 
 type packetTunnel interface {
@@ -66,11 +71,12 @@ func NewEngine() *Engine { return &Engine{} }
 
 // Start establishes the transport and initializes the IP stack. Stop may be
 // called concurrently to cancel startup. The address includes the server port.
-func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, mtu int64, requirePostQuantum, blockLAN bool) error {
+func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, mtu int64, requirePostQuantum, blockLAN, highSecurity bool) error {
 	if receiveBytesPerSecond < 0 {
 		return errInvalidRate
 	}
-	return e.start(mtu, false, func(ctx context.Context) (packetTunnel, io.Closer, error) {
+	policy := packetPolicy{filterPrivacy: highSecurity}
+	return e.start(mtu, policy, func(ctx context.Context) (packetTunnel, io.Closer, error) {
 		client, err := hy2.Dial(ctx, hy2.Config{
 			Address:               address,
 			Auth:                  auth,
@@ -95,21 +101,25 @@ func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, 
 }
 
 // StartWireGuard connects to the Cuven relay and awaits the peer handshake.
-// All keys use standard WireGuard base64 encoding. An empty PSK omits it.
-func (e *Engine) StartWireGuard(endpoint, privateKey, peerPublicKey, presharedKey, transportKey string, mtu int64, blockLAN bool) error {
-	return e.start(mtu, blockLAN, func(ctx context.Context) (packetTunnel, io.Closer, error) {
+// Keys are 32 bytes encoded as padded base64. An empty PSK omits it.
+// Camouflage requires a matching relay envelope version and enables filtering
+// for plain DNS and identifiable STUN/TURN traffic.
+func (e *Engine) StartWireGuard(endpoint, privateKey, peerPublicKey, presharedKey, transportKey string, mtu int64, blockLAN, camouflage bool) error {
+	policy := packetPolicy{blockLAN: blockLAN, filterPrivacy: camouflage}
+	return e.start(mtu, policy, func(ctx context.Context) (packetTunnel, io.Closer, error) {
 		stack, err := wg.Open(ctx, wg.Config{
 			Endpoint:      endpoint,
 			PrivateKey:    privateKey,
 			PeerPublicKey: peerPublicKey,
 			PresharedKey:  presharedKey,
 			TransportKey:  transportKey,
+			Camouflage:    camouflage,
 		}, int(mtu))
 		return stack, nil, err
 	})
 }
 
-func (e *Engine) start(mtu int64, filterLAN bool, open func(context.Context) (packetTunnel, io.Closer, error)) error {
+func (e *Engine) start(mtu int64, policy packetPolicy, open func(context.Context) (packetTunnel, io.Closer, error)) error {
 	if mtu < minMTU || mtu > maxMTU {
 		return errInvalidMTU
 	}
@@ -129,7 +139,7 @@ func (e *Engine) start(mtu int64, filterLAN bool, open func(context.Context) (pa
 		e.Stop()
 		return err
 	}
-	live := &session{ctx: ctx, transport: transport, tunnel: stack, mtu: int(mtu), filterLAN: filterLAN}
+	live := &session{ctx: ctx, transport: transport, tunnel: stack, mtu: int(mtu), policy: policy}
 
 	e.mu.Lock()
 	if e.state == engineStopped {
@@ -157,7 +167,7 @@ func (e *Engine) WriteBatch(batch []byte) error {
 		return err
 	}
 	for _, packet := range packets[:count] {
-		if live.filterLAN && tunnel.IsLANPacket(packet) {
+		if (live.policy.blockLAN && tunnel.IsLANPacket(packet)) || (live.policy.filterPrivacy && tunnel.RejectPrivateTraffic(packet)) {
 			continue
 		}
 		if err := live.tunnel.WritePacket(packet); err != nil && !errors.Is(err, tunnel.ErrInvalidPacket) {

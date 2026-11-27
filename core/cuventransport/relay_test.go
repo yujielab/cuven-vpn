@@ -10,6 +10,12 @@ import (
 )
 
 func TestRelayAuthenticatedTrafficAndPeerLimit(t *testing.T) {
+	t.Run("v1", func(t *testing.T) { testRelayTraffic(t, Version1) })
+	t.Run("v2", func(t *testing.T) { testRelayTraffic(t, Version2) })
+}
+
+func testRelayTraffic(t *testing.T, version Version) {
+	t.Helper()
 	upstream := localSocket(t)
 	listener := localSocket(t)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -17,6 +23,7 @@ func TestRelayAuthenticatedTrafficAndPeerLimit(t *testing.T) {
 	go func() {
 		done <- ServeRelay(ctx, listener, RelayConfig{
 			Key: bytes.Repeat([]byte{7}, KeySize), Upstream: upstream.LocalAddr().(*net.UDPAddr).AddrPort(), MaxPeers: 2,
+			Version: version,
 		})
 	}()
 	t.Cleanup(func() {
@@ -32,7 +39,7 @@ func TestRelayAuthenticatedTrafficAndPeerLimit(t *testing.T) {
 	})
 	remote := listener.LocalAddr().(*net.UDPAddr).AddrPort()
 	a, b, c := localSocket(t), localSocket(t), localSocket(t)
-	codec, other := testCodec(t, 7), testCodec(t, 8)
+	codec, other := testVersionCodec(t, 7, version), testVersionCodec(t, 8, version)
 	token := bytes.Repeat([]byte{3}, TokenSize)
 	probe := encode(t, codec, Probe, token)
 	write(t, c, remote, probe)

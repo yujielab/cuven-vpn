@@ -61,13 +61,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               let credential = configuration.passwordReference ?? values[TunnelConfiguration.credentialKey] as? Data else {
             throw TunnelFailure.configuration
         }
-        guard let profile = try? VPNProfile.decode(profileData) else { throw TunnelFailure.configuration }
+        let profile = try VPNProfile.decode(profileData)
+        if profile.highSecurity {
+            guard configuration.includeAllNetworks, !configuration.excludeLocalNetworks,
+                  !configuration.excludeAPNs, !configuration.excludeCellularServices else {
+                throw TunnelFailure.strictRouting
+            }
+        }
         let primary = try ConnectionProfile(profile: profile, reference: credential)
         var alternate: ConnectionProfile?
-        if values[TunnelConfiguration.automaticFallbackKey] as? Bool == true, !profile.requirePostQuantum,
+        if values[TunnelConfiguration.automaticFallbackKey] as? Bool == true,
+           !profile.highSecurity, !profile.requirePostQuantum,
            let alternateData = values[TunnelConfiguration.alternateProfileKey] as? Data,
            let reference = values[TunnelConfiguration.alternateCredentialKey] as? Data,
-           let alternateProfile = try? VPNProfile.decode(alternateData), alternateProfile.transport != profile.transport {
+           let alternateProfile = try? VPNProfile.decode(alternateData),
+           !alternateProfile.highSecurity, alternateProfile.transport != profile.transport {
             alternate = try? ConnectionProfile(profile: alternateProfile, reference: reference)
         }
         let session = Session(primary: primary, alternate: alternate, completion: completionHandler)
@@ -77,6 +85,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func resolve(_ session: Session) {
         let profile = session.current.profile
+        if profile.highSecurity {
+            session.endpoints = [profile.endpoint]
+            connect(session)
+            return
+        }
         let endpointLimit = session.endpointLimit
         worker.async {
             let resolved = TunnelEndpoint.resolve(host: profile.host, port: profile.port)
@@ -137,7 +150,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         receiveBytesPerSecond: 0,
                         mtu: Int64(TunnelConfiguration.mtu),
                         requirePostQuantum: connection.profile.requirePostQuantum,
-                        blockLAN: blockLAN
+                        blockLAN: blockLAN,
+                        highSecurity: connection.profile.highSecurity
                     )
                 case .wireGuard(let keys, let peerPublicKey):
                     try engine.startWireGuard(
@@ -147,7 +161,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         presharedKey: keys.presharedKey ?? "",
                         transportKey: keys.relayKey,
                         mtu: Int64(TunnelConfiguration.mtu),
-                        blockLAN: blockLAN
+                        blockLAN: blockLAN,
+                        camouflage: connection.profile.highSecurity
                     )
                 }
                 connected = true
@@ -184,7 +199,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let ipv6 = NEIPv6Settings(addresses: [v6.host], networkPrefixLengths: [NSNumber(value: v6.prefix)])
         ipv6.includedRoutes = [.default()]
         settings.ipv6Settings = ipv6
-        let dns = NEDNSSettings(servers: plan.dnsServers)
+        let dns: NEDNSSettings
+        if let url = plan.dnsOverHTTPSURL {
+            let encrypted = NEDNSOverHTTPSSettings(servers: plan.dnsServers)
+            encrypted.serverURL = url
+            if #available(iOS 26.0, *) {
+                encrypted.allowFailover = false
+            }
+            dns = encrypted
+        } else {
+            dns = NEDNSSettings(servers: plan.dnsServers)
+        }
         dns.matchDomains = [""]
         dns.matchDomainsNoSearch = true
         settings.dnsSettings = dns
@@ -260,7 +285,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 if let decoded = PacketBatch.decode(batch, mtu: TunnelConfiguration.mtu) {
                     _ = self.packetFlow.writePackets(decoded.packets, withProtocols: decoded.protocols)
                 } else {
-                    self.terminate(session, failure: .packetFormat)
+                    if session.current.profile.highSecurity {
+                        self.connectionFailed(session)
+                    } else {
+                        self.terminate(session, failure: .packetFormat)
+                    }
                     return
                 }
                 self.readFromCore(session, engine: engine)
@@ -329,15 +358,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func scheduleReconnect(_ session: Session) {
         guard session.path?.available != false, session.pendingRetry == nil else { return }
-        guard session.reconnectAttempts < 3 else {
+        guard session.current.profile.highSecurity || session.reconnectAttempts < 3 else {
             terminate(session, failure: .disconnected)
             return
         }
-        let delay = 1 << session.reconnectAttempts
+        let delay = min(1 << session.reconnectAttempts, 30)
         let retry = DispatchWorkItem { [weak self, weak session] in
             guard let self, let session, self.session === session else { return }
             session.pendingRetry = nil
-            session.reconnectAttempts += 1
+            session.reconnectAttempts = min(session.reconnectAttempts + 1, 5)
             self.connect(session)
         }
         session.pendingRetry = retry
@@ -411,7 +440,7 @@ private final class Session {
     init(primary: ConnectionProfile, alternate: ConnectionProfile?, completion: @escaping (Error?) -> Void) {
         current = primary
         self.alternate = alternate
-        blockLAN = primary.profile.blockLAN
+        blockLAN = primary.profile.blockLAN || primary.profile.highSecurity
         endpointLimit = alternate == nil ? 3 : 2
         self.completion = completion
     }
@@ -445,6 +474,7 @@ private final class Session {
 
 private enum TunnelFailure: Int, LocalizedError, CustomNSError {
     case configuration = 1, resolution, connection, settings, disconnected, packetFormat, cancelled
+    case strictRouting
 
     static let errorDomain = "dev.cuven.vpn.tunnel"
     var errorCode: Int { rawValue }
@@ -459,6 +489,7 @@ private enum TunnelFailure: Int, LocalizedError, CustomNSError {
         case .disconnected: "VPN 连接已断开，且无法恢复。"
         case .packetFormat: "隧道核心返回了无效的数据包。"
         case .cancelled: "VPN 连接已取消。"
+        case .strictRouting: "高安全模式的系统 VPN 路由配置不完整，请在 Cuven 中重新保存。"
         }
     }
 }
