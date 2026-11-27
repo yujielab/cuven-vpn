@@ -2,11 +2,14 @@ import datetime as dt
 import importlib.util
 import pathlib
 import plistlib
+import ssl
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 TOOL = pathlib.Path(__file__).resolve().parents[1] / "check-signed-ipa.py"
 spec = importlib.util.spec_from_file_location("signing", TOOL)
@@ -65,8 +68,57 @@ class SigningFields(unittest.TestCase):
         *_, errors, _ = signing.checks("App", info, signed, profile, NOW + dt.timedelta(days=2))
         self.assertTrue(errors)
 
+    def test_only_the_verified_cms_signer_can_satisfy_a_profile(self):
+        with tempfile.TemporaryDirectory() as path:
+            root = pathlib.Path(path)
+            def openssl(*args, data=None):
+                return subprocess.run(
+                    ["openssl", *args], input=data, cwd=root, capture_output=True, check=True,
+                ).stdout
+            for name in ("signer", "unrelated"):
+                openssl("req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                        "-subj", "/CN=LocalFixture-" + name, "-keyout", name + ".key", "-out", name + ".pem")
+            directory = b"code-directory-test-fixture"
+            signature = openssl("smime", "-sign", "-binary", "-inkey", "signer.key", "-signer", "signer.pem",
+                                "-certfile", "unrelated.pem", "-outform", "DER", data=directory)
+            signing_cert = ssl.PEM_cert_to_DER_cert((root / "signer.pem").read_text())
+            unrelated_cert = ssl.PEM_cert_to_DER_cert((root / "unrelated.pem").read_text())
+            binary = root / "arm64"
+            binary.write_bytes(b"fixture")
+            for content, allowed, message in [
+                (directory, [signing_cert], None),
+                (directory, [unrelated_cert], "DeveloperCertificates"),
+                (directory, [], "DeveloperCertificates"),
+                (directory + b"changed", [signing_cert], "CodeDirectory"),
+            ]:
+                with self.subTest(message=message), mock.patch.object(
+                    signing, "code_signature", return_value=(content, signature)
+                ):
+                    result = signing.signer_problem(binary, {"DeveloperCertificates": allowed}, root)
+                    if message is None:
+                        self.assertIsNone(result)
+                    else:
+                        self.assertIn(message, result)
+
+    def test_fat_slices_and_embedded_signature_bounds(self):
+        directory = struct.pack(">II", 0xFADE0C02, 8)
+        cms = b"synthetic"
+        wrapper = struct.pack(">II", 0xFADE0B01, 8 + len(cms)) + cms
+        blob = (struct.pack(">7I", 0xFADE0CC0, 28 + len(directory + wrapper), 2,
+                            0, 28, 0x10000, 28 + len(directory)) + directory + wrapper)
+        header = struct.pack("<8I", 0xFEEDFACF, signing.ARM64, 0, 2, 1, 16, 0, 0)
+        thin = header + struct.pack("<4I", 0x1D, 16, 48, len(blob)) + blob
+        fat = struct.pack(">7I", 0xCAFEBABE, 1, signing.ARM64, 0, 28, len(thin), 2) + thin
+        self.assertEqual(signing.arm64_images(fat), [(28, len(fat))])
+        self.assertEqual(signing.code_signature(fat, 28, len(fat)), (directory, cms))
+        for cut in (0, 28, len(fat) - 1):
+            with self.subTest(cut=cut), self.assertRaises(signing.InspectionError):
+                signing.code_signature(fat, 28, cut)
+        with self.assertRaises(signing.InspectionError):
+            signing.arm64_images(fat[:-1])
+
     @unittest.skipUnless(sys.platform == "darwin", "uses Apple signing tools")
-    def test_macos_tools_read_both_archived_targets(self):
+    def test_macos_tools_reject_an_ad_hoc_signature_on_each_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             def run(*args, **kw):
@@ -93,4 +145,5 @@ class SigningFields(unittest.TestCase):
                     z.writestr(path + "/embedded.mobileprovision", cms.stdout)
                     z.write(root / "thin", path + "/" + exe)
             result = subprocess.run([sys.executable, str(TOOL), str(archive)], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
+            self.assertEqual(result.stdout.count("缺少证书签名"), 2)

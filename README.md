@@ -89,7 +89,7 @@ open Cuven.xcodeproj
 python3 scripts/check-signed-ipa.py ./Cuven-signed.ipa
 ```
 
-macOS 使用系统自带的 `codesign` 和 `security`，Linux 使用 `ldid`（支持 `-arch arm64`）和 OpenSSL。工具在本机读取最终 IPA 中的签名权限、Bundle ID 和嵌入的描述文件。退出码 0 表示所检查字段匹配，1 表示身份、描述文件或 Packet Tunnel 字段冲突，2 表示未完成检查，3 表示手动连接所需字段匹配但共享组仍需修正。证书信任、设备是否在描述文件的授权范围内以及实际连接需要在设备上验证。
+macOS 使用系统自带的 `codesign`、`security` 和 OpenSSL。Linux 使用支持 `-arch arm64` 的 `ldid` 与 OpenSSL。工具在本机读取最终 IPA 的两个目标，核对 Bundle ID、签入的权限和描述文件。它会验证各 arm64 可执行文件的 CodeDirectory 签名，并检查实际签名证书是否列入该目标描述文件的 `DeveloperCertificates`。退出码 0 表示所检查字段匹配，1 表示身份、描述文件或 Packet Tunnel 字段冲突，2 表示未完成检查，3 表示手动连接所需字段匹配但共享组仍需修正。完整安装校验、Apple 证书信任、设备授权和 VPN 连接仍需在真机验证。
 
 ## 验证
 

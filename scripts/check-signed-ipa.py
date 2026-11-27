@@ -2,9 +2,12 @@
 """Offline signing-field check for locally re-signed Cuven IPAs."""
 import argparse
 import datetime as dt
+import mmap
 import plistlib
 import re
 import shutil
+import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -43,6 +46,125 @@ def member(archive, counts, name):
     return archive.read(name)
 
 
+# Apple mach-o/fat.h, loader.h and Security's CSCommon: integers in the
+# embedded signature are big-endian even when the Mach-O header is not.
+ARM64 = 0x0100000C
+
+
+def region(offset, size, lower, upper):
+    if offset < lower or size < 0 or offset + size > upper:
+        raise InspectionError("可执行文件的签名结构超出边界。")
+    return offset + size
+
+
+def arm64_images(data):
+    fat_formats = {
+        b"\xca\xfe\xba\xbe": ">IIIII", b"\xbe\xba\xfe\xca": "<IIIII",
+        b"\xca\xfe\xba\xbf": ">IIQQII", b"\xbf\xba\xfe\xca": "<IIQQII",
+    }
+    record = fat_formats.get(data[:4])
+    if record is None:
+        return [(0, len(data))]
+    region(0, 8, 0, len(data))
+    count = struct.unpack_from(record[0] + "I", data, 4)[0]
+    size = struct.calcsize(record)
+    table_end = region(8, count * size, 0, len(data))
+    images = []
+    for entry in range(8, table_end, size):
+        cpu, _, offset, length, *_ = struct.unpack_from(record, data, entry)
+        if cpu == ARM64:
+            images.append((offset, region(offset, length, table_end, len(data))))
+    if not images:
+        raise InspectionError("可执行文件缺少 arm64 架构。")
+    return images
+
+
+def code_signature(data, start, end):
+    position = region(start, 32, start, end)
+    if struct.unpack_from("<II", data, start) != (0xFEEDFACF, ARM64):
+        raise InspectionError("无法识别 arm64 Mach-O 头。")
+    count, length = struct.unpack_from("<II", data, start + 16)
+    commands_end = region(position, length, position, end)
+    signature = None
+    for _ in range(count):
+        region(position, 8, start, commands_end)
+        command, size = struct.unpack_from("<II", data, position)
+        following = region(position, size, position, commands_end)
+        if size < 8:
+            raise InspectionError("Mach-O 命令长度无效。")
+        if command == 0x1D:  # LC_CODE_SIGNATURE
+            if size < 16 or signature is not None:
+                raise InspectionError("Mach-O 签名命令无效。")
+            offset, size_on_disk = struct.unpack_from("<II", data, position + 8)
+            begin = start + offset
+            signature = (begin, region(begin, size_on_disk, commands_end, end))
+        position = following
+    if signature is None:
+        return None
+    base, limit = signature
+    region(base, 12, base, limit)
+    magic, length, count = struct.unpack_from(">III", data, base)
+    limit = region(base, length, base, limit)
+    table_end = region(base + 12, 8 * count, base, limit)
+    if magic != 0xFADE0CC0:
+        raise InspectionError("无法识别嵌入签名。")
+    parts = {}
+    for entry in range(base + 12, table_end, 8):
+        slot, relative = struct.unpack_from(">II", data, entry)
+        if slot not in (0, 0x10000):
+            continue
+        header = base + relative
+        region(header, 8, table_end, limit)
+        kind, length = struct.unpack_from(">II", data, header)
+        finish = region(header, length, table_end, limit)
+        expected = 0xFADE0C02 if slot == 0 else 0xFADE0B01
+        if length < 8 or kind != expected or slot in parts:
+            raise InspectionError("CodeDirectory 或 CMS 签名条目无效。")
+        parts[slot] = data[header:finish] if slot == 0 else data[header + 8:finish]
+    if not parts.get(0x10000):
+        return None
+    if 0 not in parts:
+        raise InspectionError("缺少 CMS 对应的 CodeDirectory。")
+    return parts[0], parts[0x10000]
+
+
+def signer_problem(binary, profile, temp):
+    openssl = "/usr/bin/openssl" if sys.platform == "darwin" else "openssl"
+    if not shutil.which(openssl):
+        raise InspectionError("核对签名证书需要 OpenSSL。")
+    authorized = profile.get("DeveloperCertificates", [])
+    if not binary.stat().st_size:
+        raise InspectionError("可执行文件为空。")
+    with binary.open("rb") as source, mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        for start, end in arm64_images(data):
+            parts = code_signature(data, start, end)
+            if parts is None:
+                return "arm64 可执行文件缺少证书签名。请使用描述文件授权的签名身份重签。"
+            directory, cms = parts
+            content = temp / "code-directory"
+            signer = temp / "cms-signer.pem"
+            signer.unlink(missing_ok=True)
+            content.write_bytes(directory)
+            # -signer on verification returns only actual signers, excluding
+            # unrelated certificates in the embedded certification chain.
+            result = subprocess.run(
+                [openssl, "smime", "-verify", "-inform", "DER", "-binary", "-noverify",
+                 "-content", str(content), "-signer", str(signer)],
+                input=cms, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30,
+            )
+            if result.returncode:
+                return "CMS 签名与可执行文件的 CodeDirectory 不匹配。"
+            if not signer.is_file():
+                raise InspectionError("无法提取 CMS 签名证书。")
+            pem = signer.read_text(encoding="ascii")
+            if pem.count("-----BEGIN CERTIFICATE-----") != 1:
+                raise InspectionError("无法确定唯一的 CMS 签名证书。")
+            leaf = ssl.PEM_cert_to_DER_cert(pem)
+            if not isinstance(authorized, list) or leaf not in authorized:
+                return "实际签名证书未列入本目标描述文件的 DeveloperCertificates。"
+    return None
+
+
 def read_target(archive, counts, root, temp):
     info = plist(member(archive, counts, root + "/Info.plist"), root)
     exe = info.get("CFBundleExecutable")
@@ -62,8 +184,9 @@ def read_target(archive, counts, root, temp):
     else:
         profile_args = ["openssl", "cms", "-verify", "-inform", "DER", "-noverify", "-in", str(profile_path)]
         signing_args = ["ldid", "-arch", "arm64", "-e", str(binary)]
-    return (info, plist(output(signing_args, root), "可执行文件签名"),
-            plist(output(profile_args, root), "描述文件"))
+    signed = plist(output(signing_args, root), "可执行文件签名")
+    profile = plist(output(profile_args, root), "描述文件")
+    return info, signed, profile, signer_problem(binary, profile, temp)
 
 
 def values(obj, name):
@@ -138,8 +261,10 @@ def inspect(path):
         app_root = roots[0]
         targets = []
         for label, root in (("Cuven", app_root), ("CuvenTunnel", app_root + "/PlugIns/CuvenTunnel.appex")):
-            info, signed, profile = read_target(archive, counts, root, Path(work))
+            info, signed, profile, signer_error = read_target(archive, counts, root, Path(work))
             bundle, team, group, errors, shared = checks(label, info, signed, profile, now)
+            if signer_error:
+                errors.append(signer_error)
             if label == "CuvenTunnel":
                 extension = info.get("NSExtension")
                 if not isinstance(extension, dict) or extension.get("NSExtensionPointIdentifier") != "com.apple.networkextension.packet-tunnel":
@@ -163,7 +288,7 @@ def inspect(path):
     if shared_problems:
         print("Packet Tunnel 签名字段匹配。可测试 App 内手动连接；按需连接仍缺少共享钥匙串授权。")
         return 3
-    print("两个目标的 Packet Tunnel、身份和共享钥匙串字段均匹配，可进行真机连接验证。")
+    print("两个目标的签名证书、Packet Tunnel、身份和共享钥匙串字段均匹配，可进行真机连接验证。")
     return 0
 
 
