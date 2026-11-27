@@ -7,14 +7,16 @@ binary=$(realpath "${1:?Specify the compiled Linux gateway}")
 probe=$(realpath "${2:?Specify the compiled client probe}")
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 [[ $EUID == 0 && -x "$binary" && -d /run/systemd/system && -c /dev/net/tun ]]
-for tool in ip nft sysctl openssl unshare systemctl systemd-analyze; do command -v "$tool" >/dev/null; done
+for tool in ip nft sysctl openssl unshare systemctl systemd-analyze python3; do command -v "$tool" >/dev/null; done
 
 work=$(mktemp -d /var/lib/cuven-service-test.XXXXXXXX)
 name=${work##*/}
 unit="$name.service"
 unit_file="/run/systemd/system/$unit"
+port_holder=
 cleanup() {
     local outcome=$?
+    if [[ -n "$port_holder" ]]; then kill "$port_holder" 2>/dev/null || true; wait "$port_holder" 2>/dev/null || true; fi
     if [[ "$outcome" != 0 && -e "$unit_file" ]]; then
         journalctl -u "$unit" --no-pager -n 15 || true
     fi
@@ -65,6 +67,18 @@ fi
 exec /usr/bin/install "$@"
 SHIM
 chmod 0700 "$work/shim/systemctl" "$work/shim/install"
+# Hold an unrelated UDP port in the fixture network during reconfiguration.
+in_network python3 -c '
+import pathlib, signal, socket, sys
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as listener:
+    listener.bind(("127.0.0.1", 0))
+    pathlib.Path(sys.argv[1]).write_text(str(listener.getsockname()[1]))
+    signal.pause()
+' "$work/occupied-port" &
+port_holder=$!
+for _ in {1..100}; do [[ ! -s "$work/occupied-port" ]] || break; sleep 0.02; done
+[[ -s "$work/occupied-port" ]]
+
 in_network unshare --mount --propagation private -- bash -eu -c '
     work=$1
     mount --bind "$work/etc" /etc
@@ -88,6 +102,10 @@ in_network unshare --mount --propagation private -- bash -eu -c '
     token_before=$(sha256sum /etc/cuven-gateway/token)
     setup
     if setup --port 4513; then exit 1; fi
+    saved_files=$(sha256sum /etc/cuven-gateway/{token,firewall.nft,forwarding.conf,cuven-gateway,gateway-name} /etc/systemd/system/cuven-gateway.service)
+    if setup --reconfigure --port "$(cat "$work/occupied-port")" >"$work/collision.log" 2>&1; then exit 1; fi
+    grep -Fq "无法绑定网关 UDP 地址" "$work/collision.log"
+    [[ "$saved_files" == "$(sha256sum /etc/cuven-gateway/{token,firewall.nft,forwarding.conf,cuven-gateway,gateway-name} /etc/systemd/system/cuven-gateway.service)" ]]
     # Model an older installed ELF while retaining the packaged release bytes.
     printf test >>/etc/cuven-gateway/cuven-gateway
     old_program=$(sha256sum /etc/cuven-gateway/cuven-gateway)

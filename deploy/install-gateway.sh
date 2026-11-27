@@ -117,6 +117,13 @@ else
     (cd "$repo/core" && go build -mod=readonly -trimpath -o "$staging/cuven-gateway" ./cmd/cuven-gateway)
 fi
 "$staging/cuven-gateway" -check-tls -tls-cert "$cert" -tls-key "$key" -tls-name "$domain"
+# The active gateway owns its current socket. Check every other proposed
+# listener before publishing settings or asking systemd to stop that gateway.
+if [[ ! -f "$state/install-version" ]] ||
+    ! grep -Eq "^ExecStart=.* -listen :$port([[:space:]]|$)" "$unit" ||
+    ! systemctl is-active --quiet cuven-gateway.service; then
+    "$staging/cuven-gateway" -check-listen -listen ":$port"
+fi
 
 cat >"$staging/firewall.nft" <<EOF
 add table inet cuven_gateway

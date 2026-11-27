@@ -34,8 +34,19 @@ func main() {
 	modelPath := flag.String("model-file", "", "optional local link health model")
 	dual := flag.Bool("ipv6", false, "forward IPv6 for the enrolled client")
 	checkTLS := flag.Bool("check-tls", false, "check the configured TLS identity and exit")
+	checkListen := flag.Bool("check-listen", false, "test binding the configured UDP address and exit")
 	name := flag.String("tls-name", "", "client's expected gateway name or IP address for -check-tls")
 	flag.Parse()
+	if *checkListen {
+		socket, err := net.ListenPacket("udp", *listen)
+		if err != nil {
+			log.Fatalf("无法绑定网关 UDP 地址 %s，请确认端口可用: %v", *listen, err)
+		}
+		if err := socket.Close(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *checkTLS {
 		if err := checkTLSIdentity(*cert, *key, *name); err != nil {
 			log.Fatal(err)
