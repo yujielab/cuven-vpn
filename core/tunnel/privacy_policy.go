@@ -9,7 +9,9 @@ import (
 // RejectPrivateTraffic reports whether the strict privacy policy rejects a raw
 // outbound IP packet. It blocks conventional plaintext DNS and STUN/TURN ports,
 // recognizable STUN messages, and packets that cannot be classified safely.
-func RejectPrivateTraffic(packet []byte) bool {
+// If blockUDP is set, all application UDP packets are rejected. Transport
+// sockets for the tunnel itself are outside this packet flow.
+func RejectPrivateTraffic(packet []byte, blockUDP bool) bool {
 	if len(packet) == 0 {
 		return true
 	}
@@ -57,7 +59,7 @@ func RejectPrivateTraffic(packet []byte) bool {
 		}
 		data = payload[offset:]
 	case byte(header.UDPProtocolNumber):
-		if len(payload) < header.UDPMinimumSize || int(binary.BigEndian.Uint16(payload[4:6])) != len(payload) {
+		if blockUDP || len(payload) < header.UDPMinimumSize || int(binary.BigEndian.Uint16(payload[4:6])) != len(payload) {
 			return true
 		}
 		data = payload[header.UDPMinimumSize:]

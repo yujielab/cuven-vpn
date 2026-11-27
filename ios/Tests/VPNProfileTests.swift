@@ -19,9 +19,12 @@ final class VPNProfileTests: XCTestCase {
 
     func testHighSecurityRequiresAnIPButAllowsASeparateTLSName() throws {
         XCTAssertThrowsError(try VPNProfile(host: "edge.example.com", highSecurity: true))
-        let profile = try VPNProfile(host: "2001:db8::1", serverName: "edge.example.com", highSecurity: true)
+        let profile = try VPNProfile(
+            host: "2001:db8::1", serverName: "edge.example.com", highSecurity: true, blockAppUDP: true
+        )
         let decoded = try VPNProfile.decode(JSONEncoder().encode(profile))
         XCTAssertTrue(decoded.highSecurity)
+        XCTAssertTrue(decoded.blockAppUDP)
         XCTAssertEqual(decoded.serverName, "edge.example.com")
     }
 
@@ -30,6 +33,7 @@ final class VPNProfileTests: XCTestCase {
         let data = try JSONEncoder().encode(profile)
         var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         fields.removeValue(forKey: "highSecurity")
+        fields.removeValue(forKey: "blockAppUDP")
         let previous = try JSONSerialization.data(withJSONObject: fields)
         XCTAssertEqual(try VPNProfile.decode(previous), profile)
     }

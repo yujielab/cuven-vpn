@@ -32,6 +32,7 @@ struct VPNProfile: Codable, Sendable, Equatable {
     let blockLAN: Bool
     let preventBypass: Bool
     let highSecurity: Bool
+    let blockAppUDP: Bool
 
     var dnsServers: [String] { useCustomDNS ? customDNSServers : Self.defaultDNSServers }
 
@@ -49,7 +50,8 @@ struct VPNProfile: Codable, Sendable, Equatable {
         requirePostQuantum: Bool = false,
         blockLAN: Bool = false,
         preventBypass: Bool = false,
-        highSecurity: Bool = false
+        highSecurity: Bool = false,
+        blockAppUDP: Bool = false
     ) throws {
         let host = Self.unbracket(host.trimmingCharacters(in: .whitespacesAndNewlines))
         let serverName = serverName?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -78,6 +80,7 @@ struct VPNProfile: Codable, Sendable, Equatable {
         self.blockLAN = blockLAN
         self.preventBypass = preventBypass
         self.highSecurity = highSecurity
+        self.blockAppUDP = blockAppUDP
     }
 
     var endpoint: String {
@@ -86,7 +89,7 @@ struct VPNProfile: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case transport, wireGuard, host, port, serverName, customDNSServers, useCustomDNS, autoConnect
-        case requirePostQuantum, blockLAN, preventBypass, highSecurity
+        case requirePostQuantum, blockLAN, preventBypass, highSecurity, blockAppUDP
     }
 
     init(from decoder: any Decoder) throws {
@@ -103,7 +106,8 @@ struct VPNProfile: Codable, Sendable, Equatable {
             requirePostQuantum: saved.decode(Bool.self, forKey: .requirePostQuantum),
             blockLAN: saved.decode(Bool.self, forKey: .blockLAN),
             preventBypass: saved.decode(Bool.self, forKey: .preventBypass),
-            highSecurity: saved.decodeIfPresent(Bool.self, forKey: .highSecurity) ?? false
+            highSecurity: saved.decodeIfPresent(Bool.self, forKey: .highSecurity) ?? false,
+            blockAppUDP: saved.decodeIfPresent(Bool.self, forKey: .blockAppUDP) ?? false
         )
     }
 

@@ -21,7 +21,7 @@ Cuven WG 的高安全模式需要服务端选择 v2 封装。v2 将报文类型�
 ./cuven-wg-relay -listen :51822 -upstream 127.0.0.1:51820 -envelope-version 2
 ```
 
-高安全模式会拦截常用 STUN/TURN 端口和可识别的明文探测报文，部分通话可能失败。浏览器或应用仍可能通过 WebRTC 接口披露本机候选地址，封装于 HTTPS 等加密传输的探测也可能无法识别。DHCP、部分运营商及伴随设备流量仍适用 iOS 系统例外。加密覆盖 iPhone 到 VPN 服务端，应用与目标站之间的内容加密由 HTTPS 等应用协议负责。 [Apple 全流量路由文档](https://developer.apple.com/documentation/networkextension/nevpnprotocol/includeallnetworks)
+高安全模式会拦截常用 STUN/TURN 端口和可识别的明文探测报文，部分通话可能失败。还可开启「阻止应用发出 UDP」，丢弃进入隧道的应用 UDP，包括无法识别载荷的 UDP。该选项保留外层 VPN UDP 和应用 TCP，可能影响 HTTP/3、通话和游戏。浏览器或应用仍可能通过 WebRTC 接口披露本机候选地址，封装于 HTTPS 等加密传输的探测也可能无法识别。DHCP、部分运营商及伴随设备流量仍适用 iOS 系统例外。加密覆盖 iPhone 到 VPN 服务端，应用与目标站之间的内容加密由 HTTPS 等应用协议负责。 [Apple 全流量路由文档](https://developer.apple.com/documentation/networkextension/nevpnprotocol/includeallnetworks)
 
 ## 构建 iOS 客户端
 

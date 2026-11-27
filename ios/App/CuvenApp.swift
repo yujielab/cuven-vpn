@@ -214,13 +214,20 @@ private struct NetworkSettingsView: View {
 
             Section {
                 Toggle("高安全模式", isOn: $vpn.highSecurity)
-                if !vpn.highSecurity {
+                if vpn.highSecurity {
+                    Toggle("阻止应用发出 UDP", isOn: $vpn.blockAppUDP)
+                } else {
                     Toggle("阻止局域网访问", isOn: $vpn.blockLAN)
                     Toggle("防止应用绕过 VPN", isOn: $vpn.preventBypass)
                 }
             } footer: {
                 if vpn.highSecurity {
-                    Text("使用强制路由、隧道内 HTTPS DNS，并拦截可识别的 STUN/TURN。部分通话可能失败。服务器需填写 IP，Cuven WG 需使用 v2 中继。")
+                    Text("使用强制路由、隧道内 HTTPS DNS，并拦截可识别的 STUN/TURN。服务器需填写 IP，Cuven WG 需使用 v2 中继。")
+                    if vpn.blockAppUDP {
+                        Text("应用 UDP 已限制。HTTP/3、部分通话和游戏可能受影响。")
+                    } else {
+                        Text("拦截 STUN/TURN 可能影响通话。")
+                    }
                 } else {
                     Text("局域网开关控制隧道期间的本地网络访问。防绕过由 iOS 强制路由，部分系统流量仍由 iOS 处理。")
                 }

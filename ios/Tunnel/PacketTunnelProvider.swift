@@ -151,7 +151,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         mtu: Int64(TunnelConfiguration.mtu),
                         requirePostQuantum: connection.profile.requirePostQuantum,
                         blockLAN: blockLAN,
-                        highSecurity: connection.profile.highSecurity
+                        highSecurity: connection.profile.highSecurity,
+                        blockUDP: connection.profile.blockAppUDP
                     )
                 case .wireGuard(let keys, let peerPublicKey):
                     try engine.startWireGuard(
@@ -162,7 +163,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         transportKey: keys.relayKey,
                         mtu: Int64(TunnelConfiguration.mtu),
                         blockLAN: blockLAN,
-                        camouflage: connection.profile.highSecurity
+                        camouflage: connection.profile.highSecurity,
+                        blockUDP: connection.profile.blockAppUDP
                     )
                 }
                 connected = true

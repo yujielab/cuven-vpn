@@ -92,9 +92,31 @@ func TestRejectPrivateTraffic(t *testing.T) {
 		{"empty", nil, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := RejectPrivateTraffic(test.packet); got != test.reject {
+			if got := RejectPrivateTraffic(test.packet, false); got != test.reject {
 				t.Fatalf("RejectPrivateTraffic() = %t, want %t", got, test.reject)
 			}
 		})
 	}
+	t.Run("block all UDP", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			packet []byte
+			reject bool
+		}{
+			{"IPv4 QUIC", v4(17, 0, 0, udp(30000, 443)), true},
+			{"IPv6 QUIC", v6(17, udp(30000, 443)), true},
+			{"IPv6 UDP after extension", v6(60, extension(17, udp(30000, 443))), true},
+			{"IPv4 HTTPS", v4(6, 0, 0, tcp(30000, 443)), false},
+			{"IPv6 HTTPS after extension", v6(60, extension(6, tcp(30000, 443))), false},
+			{"IPv4 TCP DNS", v4(6, 0, 0, tcp(30000, 53)), true},
+			{"IPv6 STUN in TCP", v6(6, append(tcp(30000, 443), stun...)), true},
+			{"IPv6 PMTU", v6(58, make([]byte, 8)), false},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				if got := RejectPrivateTraffic(test.packet, true); got != test.reject {
+					t.Fatalf("RejectPrivateTraffic() = %t, want %t", got, test.reject)
+				}
+			})
+		}
+	})
 }
