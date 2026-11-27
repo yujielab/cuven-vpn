@@ -9,7 +9,7 @@ Cuven IP 将 iPhone 或 iPad 的原始 IPv4、IPv6 包转发到自有 Linux 网�
 在 Debian 或 Ubuntu 的 x86_64、ARM64 VPS 上启用 systemd 和 TUN 后，可以直接安装。以下命令下载固定版本、校验 SHA-256，然后启动交互式安装器。
 
 ```sh
-wget -O cuven-vps-install.sh https://raw.githubusercontent.com/yujielab/cuven-vpn/367b6c745c88674b32346861275c0d6f26f74eaa/downloads/cuven-vps-install.sh && echo 'bc9d3147cb408913ed654226f9f7a782b9205be7b4c8189c413422c66b17b15f  cuven-vps-install.sh' | sha256sum -c - && sudo bash ./cuven-vps-install.sh
+wget -O cuven-vps-install.sh https://raw.githubusercontent.com/yujielab/cuven-vpn/b657d14a45fe0b03da2753c0924d3d7c038a482b/downloads/cuven-vps-install.sh && echo 'c1ad71e2a561c0d0b82e08e0ea09894b5b16565c940d3bac1c6b7146b5c90835  cuven-vps-install.sh' | sha256sum -c - && sudo bash ./cuven-vps-install.sh
 ```
 
 安装器自带网关二进制。启动前会检查证书有效期、匹配的私钥和 TLS 服务端用途，并按客户端的规则核对网关域名或 IP 与证书主题备用名称（SAN）。使用 IPv6 地址作为证书身份时，须提供含该 IP 的证书和私钥。iPhone 会在实际连接时验证证书链。已有标准路径的 Let's Encrypt 证书会自动复用。省略证书时，可在提示中同意通过 HTTP-01 签发。网关子域名应指向 VPS，Cloudflare 普通代理用户可为此子域名选择「仅 DNS」。签发与续签需要公网 TCP 80，隧道默认使用 UDP 4433。首次安装中断后可用相同参数重试。已安装时，重复指定原来的证书、端口和地址族会沿用现有配置和令牌。变更这些设置需要显式传入 `--reconfigure`。首次安装和更改 UDP 端口时会先试绑定目标端口。端口已占用时，现有网关继续运行。遇到旧版留下的无安装标记目录时，安装器会保留现场并提示检查。对于 Certbot 托管的证书，续签成功后，安装器配置的钩子会重启正在使用这份证书的网关，使新连接能看到新证书。已停用的网关会保持停用。无人值守安装可在最后的脚本命令后加 `--domain vpn.example.com --accept-terms`，将示例域名换成本机域名。
