@@ -129,7 +129,7 @@ def code_signature(data, start, end):
     return parts[0], parts[0x10000]
 
 
-def signer_problem(binary, profile, temp):
+def signer_problem(binary, profile, temp, now):
     openssl = "/usr/bin/openssl" if sys.platform == "darwin" else "openssl"
     if not shutil.which(openssl):
         raise InspectionError("核对签名证书需要 OpenSSL。")
@@ -163,10 +163,21 @@ def signer_problem(binary, profile, temp):
             leaf = ssl.PEM_cert_to_DER_cert(pem)
             if not isinstance(authorized, list) or leaf not in authorized:
                 return "实际签名证书未列入本目标描述文件的 DeveloperCertificates。"
+            dates = output([openssl, "x509", "-in", str(signer), "-noout", "-dates"], "签名证书有效期")
+            try:
+                fields = dict(line.split("=", 1) for line in dates.decode("ascii").splitlines())
+                start = ssl.cert_time_to_seconds(fields["notBefore"])
+                end = ssl.cert_time_to_seconds(fields["notAfter"])
+            except (KeyError, ValueError, OverflowError) as exc:
+                raise InspectionError("无法读取实际签名证书的有效期。") from exc
+            if now.timestamp() < start:
+                return "实际签名证书尚未生效，请核对系统时间和重签身份。"
+            if now.timestamp() > end:
+                return "实际签名证书已过期，请使用有效且获描述文件授权的身份重签。"
     return None
 
 
-def read_target(archive, counts, root, temp):
+def read_target(archive, counts, root, temp, now):
     info = plist(member(archive, counts, root + "/Info.plist"), root)
     exe = info.get("CFBundleExecutable")
     if not isinstance(exe, str) or not exe or exe in (".", "..") or "/" in exe or "\\" in exe:
@@ -187,7 +198,7 @@ def read_target(archive, counts, root, temp):
         signing_args = ["ldid", "-arch", "arm64", "-e", str(binary)]
     signed = plist(output(signing_args, root), "可执行文件签名")
     profile = plist(output(profile_args, root), "描述文件")
-    return info, signed, profile, signer_problem(binary, profile, temp)
+    return info, signed, profile, signer_problem(binary, profile, temp, now)
 
 
 def values(obj, name):
@@ -287,7 +298,7 @@ def inspect(path, device_udid=None):
         app_root = roots[0]
         targets, profiles = [], []
         for label, root in (("Cuven", app_root), ("CuvenTunnel", app_root + "/PlugIns/CuvenTunnel.appex")):
-            info, signed, profile, signer_error = read_target(archive, counts, root, Path(work))
+            info, signed, profile, signer_error = read_target(archive, counts, root, Path(work), now)
             bundle, team, group, errors, shared = checks(label, info, signed, profile, now)
             if signer_error:
                 errors.append(signer_error)

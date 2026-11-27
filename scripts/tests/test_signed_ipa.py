@@ -119,16 +119,21 @@ class SigningFields(unittest.TestCase):
             unrelated_cert = ssl.PEM_cert_to_DER_cert((root / "unrelated.pem").read_text())
             binary = root / "arm64"
             binary.write_bytes(b"fixture")
-            for content, allowed, message in [
-                (directory, [signing_cert], None),
-                (directory, [unrelated_cert], "DeveloperCertificates"),
-                (directory, [], "DeveloperCertificates"),
-                (directory + b"changed", [signing_cert], "CodeDirectory"),
+            now = dt.datetime.now(dt.timezone.utc)
+            for content, allowed, day_offset, message in [
+                (directory, [signing_cert], 0, None),
+                (directory, [signing_cert], -2, "尚未生效"),
+                (directory, [signing_cert], 2, "已过期"),
+                (directory, [unrelated_cert], 0, "DeveloperCertificates"),
+                (directory, [], 0, "DeveloperCertificates"),
+                (directory + b"changed", [signing_cert], 0, "CodeDirectory"),
             ]:
                 with self.subTest(message=message), mock.patch.object(
                     signing, "code_signature", return_value=(content, signature)
                 ):
-                    result = signing.signer_problem(binary, {"DeveloperCertificates": allowed}, root)
+                    result = signing.signer_problem(
+                        binary, {"DeveloperCertificates": allowed}, root, now + dt.timedelta(days=day_offset)
+                    )
                     if message is None:
                         self.assertIsNone(result)
                     else:
