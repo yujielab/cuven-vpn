@@ -3,6 +3,18 @@ name: Cuven IPA
 on:
   push:
     branches: [codex/cuven-ip-27.2-20261127-175013]
+    paths:
+      - ".github/workflows/ipa.yml"
+      - "project.yml"
+      - "core/**"
+      - "ios/**"
+      - "!ios/UITests/**"
+      - "!ios/Tests/SimulatorKeychainTests.swift"
+      - "scripts/build-core.sh"
+      - "scripts/package-unsigned-ipa.sh"
+      - "scripts/check-signed-ipa.py"
+      - "scripts/tests/test_signed_ipa.py"
+      - "scripts/test-apple-diagnostics.sh"
   workflow_dispatch:
 
 permissions:

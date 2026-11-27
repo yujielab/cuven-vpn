@@ -5,12 +5,18 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      suite:
+        description: Test suite
+        type: choice
+        options: [all, gateway]
+        default: all
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ inputs.suite == 'gateway' && '-gateway' || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -30,6 +36,13 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: go build ./cmd/cuven-gateway
+      - name: Run the gateway under systemd in a private network
+        run: |
+          if ! command -v nft >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends nftables
+          fi
+          sudo bash ../scripts/tests/test-gateway-systemd.sh ./cuven-gateway
       - name: Check gateway certificate validity windows
         run: bash ../scripts/tests/test-certificate-dates.sh
       - name: Test the Certbot renewal hook in a temporary filesystem
@@ -40,6 +53,7 @@ jobs:
             bash /src/scripts/tests/test-certbot-hook.sh
 
   ios:
+    if: github.event_name != 'workflow_dispatch' || inputs.suite != 'gateway'
     name: iOS 27.2 tests on ${{ matrix.device }}
     strategy:
       fail-fast: false
