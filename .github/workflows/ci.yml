@@ -127,7 +127,9 @@ jobs:
           if not summary.get("passedTests") or summary.get("failedTests") != 0:
               raise SystemExit("Expected completed, passing simulator tests")
           nodes = list(read_results("tests")["testNodes"])
+          keychain_test = "SimulatorKeychainTests/testAppCredentialFollowsSystemKeychainGrant()"
           expected = {
+              keychain_test,
               "ConnectionLayoutTests/testConnectionSettingsStayReachableAfterRotation()",
               "VPNProfileTests/testIPv4OnlyCuvenDropsCapturedIPv6BeforeForwarding()",
           }
@@ -138,7 +140,17 @@ jobs:
                   expected.discard(node.get("nodeIdentifier"))
           if expected:
               raise SystemExit(f"Missing passing simulator tests: {sorted(expected)}")
-          line = f"{summary['passedTests']} tests passed, including rotation and IPv4-only tunnel coverage."
+          activities = subprocess.check_output(
+              ["xcrun", "xcresulttool", "get", "test-results", "activities", "--path", bundle,
+               "--test-id", keychain_test], text=True
+          )
+          outcomes = [label for label in (
+              "Cuven app keychain round trip", "Cuven app keychain entitlement denied",
+              "Cuven app keychain group unconfirmed",
+          ) if label in activities]
+          if len(outcomes) != 1:
+              raise SystemExit("Could not identify the system keychain result in the test activity")
+          line = f"{summary['passedTests']} tests passed, including rotation and IPv4-only tunnel coverage. {outcomes[0]}."
           print(line)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
               print(line, file=output)
