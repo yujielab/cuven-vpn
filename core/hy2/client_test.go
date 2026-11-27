@@ -129,6 +129,158 @@ func startAuthServer(t *testing.T, curve tls.CurveID, credential string) (net.Ad
 	return listener.Addr(), roots
 }
 
+func TestInsecureSkipVerifyAcceptsUntrustedCertificate(t *testing.T) {
+	server, _ := startAuthServer(t, tls.X25519, "secret")
+	t.Run("default rejects", func(t *testing.T) {
+		client, err := Dial(t.Context(), Config{Address: server.String(), Auth: "secret", ServerName: "example.com"})
+		if client != nil {
+			_ = client.Close()
+			t.Fatal("accepted an untrusted certificate")
+		}
+		if err == nil || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("unexpected error %v", err)
+		}
+	})
+	t.Run("explicit skip", func(t *testing.T) {
+		client, err := Dial(t.Context(), Config{
+			Address: server.String(), Auth: "secret", ServerName: "example.com", InsecureSkipVerify: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		if got := client.connection.ConnectionState().TLS.ServerName; got != "example.com" {
+			t.Fatalf("SNI = %q", got)
+		}
+	})
+}
+
+func TestSalamanderDialKeepsPeerNameOnAnIPAddress(t *testing.T) {
+	const password = "example-obfs-pass"
+	server, roots, names := startSalamanderAuthServer(t, password, "secret")
+	client, err := Dial(t.Context(), Config{
+		Address: server.String(), Auth: "secret", ServerName: "example.com",
+		InsecureSkipVerify: true, Obfs: "salamander", ObfsPassword: password,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	select {
+	case got := <-names:
+		if got != "example.com" {
+			t.Fatalf("ClientHello SNI = %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not observe a ClientHello")
+	}
+	// The same obfuscation layer still works when the certificate is trusted.
+	trusted, err := Dial(t.Context(), Config{
+		Address: server.String(), Auth: "secret", ServerName: "example.com",
+		RootCAs: roots, Obfs: "salamander", ObfsPassword: password,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer trusted.Close()
+
+	wrong, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	rejected, err := Dial(wrong, Config{
+		Address: server.String(), Auth: "secret", ServerName: "example.com",
+		InsecureSkipVerify: true, Obfs: "salamander", ObfsPassword: "wrong-obfs-pass",
+	})
+	if rejected != nil {
+		_ = rejected.Close()
+		t.Fatal("wrong salamander password was accepted")
+	}
+	if err == nil {
+		t.Fatal("expected the wrong salamander password to fail")
+	}
+}
+
+func TestObfuscatedDialFallsBackWhenFirstAddressIsUnreachable(t *testing.T) {
+	const password = "example-obfs-pass"
+	server, roots, _ := startSalamanderAuthServer(t, password, "secret")
+	_, port, err := net.SplitHostPort(server.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	connection, err := raceDial(ctx, []netip.Addr{
+		netip.IPv6Loopback(), netip.MustParseAddr("127.0.0.1"),
+	}, port, &quic.Config{}, func(ctx context.Context, endpoint string, config *quic.Config) (*quic.Conn, error) {
+		return dialObfuscated(ctx, endpoint, &tls.Config{
+			ServerName: "example.com", RootCAs: roots,
+			NextProtos: []string{http3.NextProtoH3}, MinVersion: tls.VersionTLS13,
+		}, config, password)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseWithError(noError, "")
+	if remote := connection.RemoteAddr().String(); remote != server.String() {
+		t.Fatalf("remote = %s, want IPv4 fallback %s", remote, server)
+	}
+}
+
+func startSalamanderAuthServer(t *testing.T, password, credential string) (net.Addr, *x509.CertPool, <-chan string) {
+	t.Helper()
+	fixture := httptest.NewTLSServer(nil)
+	certificate := fixture.TLS.Certificates[0]
+	roots := x509.NewCertPool()
+	roots.AddCert(fixture.Certificate())
+	fixture.Close()
+
+	socket, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := wrapSalamander(socket, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make(chan string, 4)
+	listener, err := quic.Listen(wrapped, &tls.Config{
+		Certificates: []tls.Certificate{certificate}, NextProtos: []string{http3.NextProtoH3},
+		MinVersion: tls.VersionTLS13,
+		GetConfigForClient: func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+			select {
+			case names <- info.ServerName:
+			default:
+			}
+			return nil, nil
+		},
+	}, nil)
+	if err != nil {
+		_ = socket.Close()
+		t.Fatal(err)
+	}
+	srv := &http3.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "hysteria" || r.URL.Path != "/auth" || r.Method != http.MethodPost ||
+			r.Header.Get("Hysteria-Auth") != credential || r.Header.Get("Hysteria-CC-RX") != "0" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Hysteria-UDP", "false")
+		w.Header().Set("Hysteria-CC-RX", "auto")
+		w.WriteHeader(233)
+	})}
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		_ = srv.ServeListener(listener)
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = listener.Close()
+		_ = socket.Close()
+		<-finished
+	})
+	return listener.Addr(), roots, names
+}
+
 func TestTCPResponsePreservesPayload(t *testing.T) {
 	stream := bytes.NewReader([]byte{0, 2, 'O', 'K', 2, '.', '.', 'd', 'a', 't', 'a'})
 	if err := readTCPResponse(stream); err != nil {

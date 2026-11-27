@@ -4,12 +4,12 @@
 
 | 协议 | 客户端管线 | 服务端 |
 | --- | --- | --- |
-| Hysteria 2 | Cuven 实现 HTTP/3 认证、TCP 流和 UDP 会话封装，使用 quic-go 和 gVisor TCP/IP 栈 | 标准 Hysteria 2 服务端，需有受信任的 TLS 证书 |
+| Hysteria 2 | Cuven 实现 HTTP/3 认证、TCP 流和 UDP 会话封装，使用 quic-go 和 gVisor TCP/IP 栈。可选 Salamander UDP 混淆 | 标准 Hysteria 2 服务端。证书默认校验，也可显式跳过 |
 | Cuven WG | Cuven 的 UDP 封装承载 WireGuard 报文，使用内存 TUN 直接转发 IP | Cuven 中继和同机 WireGuard 服务端 |
 
 两种协议各保存一份配置。启用自动回退后，首选协议在启动阶段连接失败时会尝试另一份配置。HY2 的严格后量子模式要求服务端支持 TLS 1.3 的 X25519MLKEM768，并保持使用 HY2。Wi-Fi、蜂窝网络和所有网络可分别作为 iOS 按需连接条件。手动断开会暂停自动连接，保存设置或手动连接可恢复。
 
-自定义 DNS 随隧道生效。阻止局域网访问使用 iOS 路由与客户端过滤，仅在隧道期间生效。防绕过使用 iOS 的 `includeAllNetworks`，系统定义的流量例外仍适用。应用编辑服务器设置时需要先断开连接。私钥、封装密钥和 HY2 凭据保存在共享钥匙串。 [Apple VPN 路由文档](https://developer.apple.com/documentation/networkextension/routing-your-vpn-network-traffic)
+自定义 DNS 随隧道生效。阻止局域网访问使用 iOS 路由与客户端过滤，仅在隧道期间生效。防绕过使用 iOS 的 `includeAllNetworks`，系统定义的流量例外仍适用。应用编辑服务器设置时需要先断开连接。私钥、封装密钥、HY2 凭据和 Salamander 混淆密码保存在共享钥匙串。 [Apple VPN 路由文档](https://developer.apple.com/documentation/networkextension/routing-your-vpn-network-traffic)
 
 ## 高安全模式
 
@@ -43,7 +43,19 @@ CI 在未签名的 Release 设备构建和 iOS 模拟器测试都通过后，上
 
 ## 配置 Hysteria 2
 
-输入服务器地址、端口、认证凭据及可选的 TLS 服务器名称，或导入 `hysteria2://`、`hy2://` 链接。首版支持标准 HY2、TCP、UDP 和证书校验，服务端需启用 UDP 以承载隧道 DNS。含混淆、端口跳跃或跳过证书校验的链接会被拒绝。官方服务端 v2.14.0 在任一 TCP 方向结束时关闭连接，依赖发送端半关闭后继续收结果的应用可选择 Cuven WG。 [Hysteria 2 协议规范](https://v2.hysteria.network/docs/developers/Protocol/)
+输入服务器地址、端口、认证凭据及可选的 TLS 服务器名称，或导入 `hysteria2://`、`hy2://` 链接。`#` 后面的片段（例如 `#Example-Server`）只是备注，导入时忽略。服务端需启用 UDP 以承载隧道 DNS。端口跳跃、证书锁定，以及 Salamander 以外的混淆类型会被拒绝。官方服务端 v2.14.0 在任一 TCP 方向结束时关闭连接，依赖发送端半关闭后继续收结果的应用可选择 Cuven WG。 [Hysteria 2 协议规范](https://v2.hysteria.network/docs/developers/Protocol/)
+
+`sni` 和 `peer` 都表示 TLS 服务器名称。只填其中一个即可；两个都出现时采用 `sni`。连接到 IP 地址时，可以用 `peer=example.com` 或 `sni=example.com` 指定证书域名。
+
+证书校验默认开启。`insecure=1` 或 `insecure=true` 会跳过 TLS 证书校验（`0`、`false` 或省略则保持校验）。这样可以连接自签证书，但任意证书都会被接受，路径上的第三方可能查看或篡改流量。只在你信任该服务器时使用。
+
+`obfs=salamander` 和 `obfs-password` 启用官方 Salamander UDP 混淆。每个 QUIC 报文前有 8 字节随机盐，密钥为 `BLAKE2b-256(密码 + 盐)`，再与载荷逐字节异或。密码至少 4 个字符，且必须与服务端一致。缺少密码，或其他 `obfs` 类型，都会被拒绝。混淆密码与 HY2 凭据、Cuven WG 密钥一样写入共享钥匙串，不进入配置明文。
+
+下面这条链接只使用保留地址和占位口令，不能直接连接：
+
+```
+hysteria2://example-auth-token@198.51.100.1:443?peer=example.com&insecure=1&obfs=salamander&obfs-password=example-obfs-pass#Example-Server
+```
 
 ## 配置 Cuven WG
 
@@ -68,7 +80,7 @@ go test -race ./...
 go vet ./...
 ```
 
-若提供官方 Hysteria 2 二进制文件，Go 测试还会拉起回环地址上的官方服务端验证互操作。GitHub Actions 使用固定版本与校验和，并另行构建设备目标、打包未签名 IPA、运行 iOS 模拟器测试。
+若提供官方 Hysteria 2 二进制文件，Go 测试还会拉起回环地址上的官方服务端验证互操作，包括 Salamander 混淆和跳过证书校验。GitHub Actions 使用固定版本与校验和，并另行构建设备目标、打包未签名 IPA、运行 iOS 模拟器测试。
 
 签名、系统 VPN 权限、Wi-Fi 和蜂窝切换、后台重连及应用兼容性需要在 iPhone 上验证。核心回环测试的握手时间无法代表公网首连或移动网络吞吐。
 

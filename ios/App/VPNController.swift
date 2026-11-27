@@ -24,8 +24,12 @@ final class VPNController: ObservableObject {
     @Published var preventBypass = false
     @Published var highSecurity = false
     @Published var blockAppUDP = false
+    @Published var insecure = false
+    @Published var obfuscation = false
+    @Published var obfsPassword = ""
     @Published private(set) var autoConnectPaused = false
     @Published private(set) var hasCredential = false
+    @Published private(set) var hasSavedObfsPassword = false
     @Published private(set) var status = NEVPNStatus.invalid
     @Published private(set) var busy = false
     @Published private(set) var loaded = false
@@ -53,7 +57,7 @@ final class VPNController: ObservableObject {
 
     var canStart: Bool {
         canEdit && !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            (hasCredential || hasNewCredential)
+            (hasCredential || hasNewCredential) && hy2SecretsReady
     }
 
     var hasAlternateTransport: Bool {
@@ -70,9 +74,14 @@ final class VPNController: ObservableObject {
             wantsFallback != savedAutomaticFallback || autoConnectPaused
     }
 
+    private var hy2SecretsReady: Bool {
+        guard transport == .hy2, obfuscation else { return true }
+        return !obfsPassword.isEmpty || hasSavedObfsPassword
+    }
+
     private var hasNewCredential: Bool {
         switch transport {
-        case .hy2: !credential.isEmpty
+        case .hy2: !credential.isEmpty || (obfuscation && !obfsPassword.isEmpty)
         case .cuvenWG: !privateKey.isEmpty || !relayKey.isEmpty || !presharedKey.isEmpty
         }
     }
@@ -172,6 +181,8 @@ final class VPNController: ObservableObject {
             preventBypass = false
             highSecurity = false
             blockAppUDP = false
+            insecure = false
+            obfuscation = false
         }
         refreshCredential()
         error = nil
@@ -187,6 +198,9 @@ final class VPNController: ObservableObject {
             port = String(result.profile.port)
             serverName = result.profile.serverName ?? ""
             credential = result.credential
+            insecure = result.profile.insecure
+            obfuscation = result.profile.obfs == "salamander"
+            obfsPassword = result.obfsPassword ?? ""
             error = nil
             return true
         } catch {
@@ -348,14 +362,16 @@ final class VPNController: ObservableObject {
             host: host, transport: transport, wireGuard: wireGuard, port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 0,
             serverName: serverName, customDNSServers: Self.splitList(dns), useCustomDNS: useCustomDNS,
             autoConnect: autoConnect, requirePostQuantum: requirePostQuantum,
-            blockLAN: blockLAN, preventBypass: preventBypass, highSecurity: highSecurity, blockAppUDP: blockAppUDP
+            blockLAN: blockLAN, preventBypass: preventBypass, highSecurity: highSecurity, blockAppUDP: blockAppUDP,
+            insecure: transport == .hy2 && insecure,
+            obfs: transport == .hy2 && obfuscation ? "salamander" : nil
         )
     }
 
     private func newCredential() throws -> String {
         switch transport {
         case .hy2:
-            return credential
+            return try hy2Credential()
         case .cuvenWG:
             let preshared = presharedKey.trimmingCharacters(in: .whitespacesAndNewlines)
             return try WireGuardCredential(
@@ -366,19 +382,59 @@ final class VPNController: ObservableObject {
         }
     }
 
+    private func hy2Credential() throws -> String {
+        let needsSavedAuth = credential.isEmpty
+        let needsSavedPassword = obfuscation && obfsPassword.isEmpty
+        let saved: HysteriaCredential?
+        if needsSavedAuth || needsSavedPassword {
+            saved = try savedHysteriaCredential()
+        } else {
+            saved = nil
+        }
+        let auth: String
+        if credential.isEmpty {
+            guard let saved else { throw CredentialError.missing }
+            auth = saved.auth
+        } else {
+            try VPNProfile.validateCredential(credential)
+            auth = credential
+        }
+        guard obfuscation else { return auth }
+        let password: String
+        if !obfsPassword.isEmpty {
+            try VPNProfile.validateObfsPassword(obfsPassword)
+            password = obfsPassword
+        } else if let savedPassword = saved?.obfsPassword {
+            password = savedPassword
+        } else {
+            throw ProfileError.obfuscation
+        }
+        return try HysteriaCredential(version: HysteriaCredential.currentVersion, auth: auth, obfsPassword: password).encoded()
+    }
+
+    private func savedHysteriaCredential() throws -> HysteriaCredential? {
+        guard transport == .hy2, let reference = enrollments[.hy2]?.reference else { return nil }
+        return try HysteriaCredential.parseStored(KeychainCredential.load(reference: reference))
+    }
+
     private func clearCredentials() {
         credential = ""
         privateKey = ""
         relayKey = ""
         presharedKey = ""
+        obfsPassword = ""
     }
 
     private func refreshCredential() {
-        guard let reference = enrollments[transport]?.reference else {
+        guard let reference = enrollments[transport]?.reference,
+              let stored = try? KeychainCredential.load(reference: reference) else {
             hasCredential = false
+            hasSavedObfsPassword = false
             return
         }
-        hasCredential = (try? KeychainCredential.load(reference: reference)) != nil
+        hasCredential = true
+        hasSavedObfsPassword = transport == .hy2 &&
+            ((try? HysteriaCredential.parseStored(stored))?.obfsPassword != nil)
     }
 
     private static func splitList(_ text: String) -> [String] {
@@ -400,5 +456,7 @@ final class VPNController: ObservableObject {
         preventBypass = profile.preventBypass
         highSecurity = profile.highSecurity
         blockAppUDP = profile.blockAppUDP
+        insecure = profile.insecure
+        obfuscation = profile.obfs == "salamander"
     }
 }
