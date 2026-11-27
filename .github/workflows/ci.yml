@@ -94,10 +94,8 @@ jobs:
           xcrun simctl bootstatus "$device_id" -b
           echo "SIMULATOR_ID=$device_id" >> "$GITHUB_ENV"
       - name: Install Cuven on the booted simulator
-        timeout-minutes: 5
-        run: |
-          xcrun simctl install "$SIMULATOR_ID" DerivedData/Build/Products/Debug-iphonesimulator/Cuven.app
-          xcrun simctl get_app_container "$SIMULATOR_ID" dev.cuven.vpn app
+        timeout-minutes: 10
+        run: python3 scripts/install-simulator-app.py DerivedData/Build/Products/Debug-iphonesimulator/Cuven.app
       - name: Launch Cuven independently of XCTest
         timeout-minutes: 3
         run: |
