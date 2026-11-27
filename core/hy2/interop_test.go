@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -29,6 +30,12 @@ func TestOfficialHysteriaInterop(t *testing.T) {
 	if binary == "" {
 		t.Skip("set CUVEN_HYSTERIA_BIN to run against the upstream Hysteria server")
 	}
+	t.Run("standard", func(t *testing.T) { testOfficialHysteriaInterop(t, binary, "") })
+	t.Run("Salamander", func(t *testing.T) { testOfficialHysteriaInterop(t, binary, "salamander-test-only") })
+}
+
+func testOfficialHysteriaInterop(t *testing.T, binary, salamander string) {
+	t.Helper()
 	const serverName = "cuven-interop.test"
 	const auth = "cuven-interop-fixture"
 
@@ -44,8 +51,11 @@ func TestOfficialHysteriaInterop(t *testing.T) {
 	}
 
 	configFile := filepath.Join(dir, "server.yaml")
-	config := fmt.Sprintf("listen: %q\ntls:\n  cert: %q\n  key: %q\nauth:\n  type: password\n  password: %q\n",
+	config := fmt.Sprintf("listen: %q\ntls:\n  cert: %q\n  key: %q\n  sniGuard: disable\nauth:\n  type: password\n  password: %q\n",
 		address, certFile, keyFile, auth)
+	if salamander != "" {
+		config += fmt.Sprintf("obfs:\n  type: salamander\n  salamander:\n    password: %q\n", salamander)
+	}
 	if err := os.WriteFile(configFile, []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +88,11 @@ func TestOfficialHysteriaInterop(t *testing.T) {
 	}()
 
 	clientConfig := hy2.Config{Address: address, Auth: auth, ServerName: serverName, RootCAs: roots}
+	if salamander != "" {
+		clientConfig.SalamanderPassword = salamander
+		clientConfig.InsecureTLS = true
+		clientConfig.ServerName = "different-name.example"
+	}
 	var client *hy2.Client
 	for {
 		attempt, stop := context.WithTimeout(ctx, 300*time.Millisecond)
@@ -95,6 +110,23 @@ func TestOfficialHysteriaInterop(t *testing.T) {
 		}
 	}
 	defer client.Close()
+	if salamander != "" {
+		t.Run("verification remains enabled by default", func(t *testing.T) {
+			strict := clientConfig
+			strict.InsecureTLS = false
+			attempt, stop := context.WithTimeout(ctx, 2*time.Second)
+			defer stop()
+			unexpected, err := hy2.Dial(attempt, strict)
+			if unexpected != nil {
+				unexpected.Close()
+				t.Fatal("accepted a mismatched certificate with default TLS verification")
+			}
+			var mismatch x509.HostnameError
+			if !errors.As(err, &mismatch) {
+				t.Fatalf("expected TLS hostname verification failure, got %v", err)
+			}
+		})
+	}
 	t.Run("TCP", func(t *testing.T) {
 		local, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
@@ -181,11 +213,15 @@ func TestOfficialHysteriaInterop(t *testing.T) {
 	})
 	t.Run("untrusted certificate", func(t *testing.T) {
 		untrusted := clientConfig
+		untrusted.InsecureTLS = false
+		untrusted.ServerName = serverName
 		untrusted.RootCAs = x509.NewCertPool()
 		checkUpstreamDialRejected(t, ctx, untrusted)
 	})
 	t.Run("required hybrid TLS", func(t *testing.T) {
 		hybrid := clientConfig
+		hybrid.InsecureTLS = false
+		hybrid.ServerName = serverName
 		hybrid.RequirePostQuantum = true
 		attempt, stop := context.WithTimeout(ctx, 5*time.Second)
 		defer stop()

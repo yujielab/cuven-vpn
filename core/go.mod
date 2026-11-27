@@ -3,6 +3,7 @@ module github.com/yujielab/cuven-vpn/core
 go 1.26.3
 
 require (
+	github.com/apernet/hysteria/extras/v2 v2.14.0
 	github.com/quic-go/quic-go v0.66.0
 	gvisor.dev/gvisor v0.0.0-20260928232755-bd02d2bfb3df
 )

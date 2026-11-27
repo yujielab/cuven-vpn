@@ -62,20 +62,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw TunnelFailure.configuration
         }
         let profile = try VPNProfile.decode(profileData)
+        if profile.usesFullRouting && !configuration.includeAllNetworks {
+            throw TunnelFailure.strictRouting
+        }
+        if profile.requiresEncryptedDNS && configuration.excludeLocalNetworks {
+            throw TunnelFailure.strictRouting
+        }
         if profile.highSecurity {
-            guard configuration.includeAllNetworks, !configuration.excludeLocalNetworks,
-                  !configuration.excludeAPNs, !configuration.excludeCellularServices else {
+            guard !configuration.excludeAPNs, !configuration.excludeCellularServices else {
                 throw TunnelFailure.strictRouting
             }
         }
         let primary = try ConnectionProfile(profile: profile, reference: credential)
         var alternate: ConnectionProfile?
         if values[TunnelConfiguration.automaticFallbackKey] as? Bool == true,
-           !profile.highSecurity, !profile.requirePostQuantum,
            let alternateData = values[TunnelConfiguration.alternateProfileKey] as? Data,
            let reference = values[TunnelConfiguration.alternateCredentialKey] as? Data,
            let alternateProfile = try? VPNProfile.decode(alternateData),
-           !alternateProfile.highSecurity, alternateProfile.transport != profile.transport {
+           profile.permitsAutomaticFallback(to: alternateProfile) {
             alternate = try? ConnectionProfile(profile: alternateProfile, reference: reference)
         }
         let session = Session(primary: primary, alternate: alternate, completion: completionHandler)
@@ -141,12 +145,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         worker.async {
             let connected: Bool
             do {
+                if connection.profile.requiresEncryptedDNS {
+                    try engine.requireEncryptedDNS()
+                }
                 switch connection.auth {
-                case .hy2(let password):
-                    try engine.start(
+                case .hy2(let keys):
+                    try engine.startHY2(
                         endpoint,
-                        auth: password,
+                        auth: keys.auth,
                         serverName: connection.profile.serverName ?? connection.profile.host,
+                        salamanderPassword: keys.obfuscationPassword ?? "",
+                        insecureTLS: connection.profile.hy2Insecure,
                         receiveBytesPerSecond: 0,
                         mtu: Int64(TunnelConfiguration.mtu),
                         requirePostQuantum: connection.profile.requirePostQuantum,
@@ -154,18 +163,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         highSecurity: connection.profile.highSecurity
                     )
                 case .wireGuard(let keys, let peerPublicKey):
-                    try engine.startWireGuard(
-                        endpoint,
-                        privateKey: keys.privateKey,
-                        peerPublicKey: peerPublicKey,
-                        presharedKey: keys.presharedKey ?? "",
-                        transportKey: keys.relayKey,
-                        mtu: Int64(TunnelConfiguration.mtu),
-                        blockLAN: blockLAN,
-                        camouflage: connection.profile.highSecurity,
-                        https3: connection.profile.https3Camouflage,
-                        serverName: connection.profile.serverName ?? connection.profile.host
-                    )
+                    if connection.profile.wireGuardDirect {
+                        try engine.startDirectWireGuard(
+                            endpoint,
+                            privateKey: keys.privateKey,
+                            peerPublicKey: peerPublicKey,
+                            presharedKey: keys.presharedKey ?? "",
+                            mtu: Int64(TunnelConfiguration.mtu),
+                            blockLAN: blockLAN,
+                            highSecurity: connection.profile.highSecurity
+                        )
+                    } else {
+                        guard let relayKey = keys.relayKey else { throw TunnelFailure.configuration }
+                        try engine.startWireGuard(
+                            endpoint,
+                            privateKey: keys.privateKey,
+                            peerPublicKey: peerPublicKey,
+                            presharedKey: keys.presharedKey ?? "",
+                            transportKey: relayKey,
+                            mtu: Int64(TunnelConfiguration.mtu),
+                            blockLAN: blockLAN,
+                            camouflage: connection.profile.highSecurity,
+                            https3: connection.profile.https3Camouflage,
+                            serverName: connection.profile.serverName ?? connection.profile.host
+                        )
+                    }
                 }
                 connected = true
             } catch {
@@ -202,15 +224,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         ipv6.includedRoutes = [.default()]
         settings.ipv6Settings = ipv6
         let dns: NEDNSSettings
-        if let url = plan.dnsOverHTTPSURL {
+        switch plan.dnsMode {
+        case .https(let url):
             let encrypted = NEDNSOverHTTPSSettings(servers: plan.dnsServers)
             encrypted.serverURL = url
-            if #available(iOS 26.0, *) {
-                encrypted.allowFailover = false
-            }
             dns = encrypted
-        } else {
+        case .tls(let name):
+            let encrypted = NEDNSOverTLSSettings(servers: plan.dnsServers)
+            encrypted.serverName = name
+            dns = encrypted
+        case .cleartext:
             dns = NEDNSSettings(servers: plan.dnsServers)
+        }
+        if #available(iOS 26.0, *), session.current.profile.requiresEncryptedDNS {
+            dns.allowFailover = false
         }
         dns.matchDomains = [""]
         dns.matchDomainsNoSearch = true
@@ -287,7 +314,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 if let decoded = PacketBatch.decode(batch, mtu: TunnelConfiguration.mtu) {
                     _ = self.packetFlow.writePackets(decoded.packets, withProtocols: decoded.protocols)
                 } else {
-                    if session.current.profile.highSecurity {
+                    if session.retainsRoutesOnFailure {
                         self.connectionFailed(session)
                     } else {
                         self.terminate(session, failure: .packetFormat)
@@ -360,7 +387,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func scheduleReconnect(_ session: Session) {
         guard session.path?.available != false, session.pendingRetry == nil else { return }
-        guard session.current.profile.highSecurity || session.reconnectAttempts < 3 else {
+        guard session.retainsRoutesOnFailure || session.reconnectAttempts < 3 else {
             terminate(session, failure: .disconnected)
             return
         }
@@ -391,7 +418,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
 private struct ConnectionProfile {
     enum Authentication {
-        case hy2(String)
+        case hy2(HY2Credential)
         case wireGuard(WireGuardCredential, peerPublicKey: String)
     }
 
@@ -404,9 +431,11 @@ private struct ConnectionProfile {
         self.profile = profile
         switch profile.transport {
         case .hy2:
-            auth = .hy2(secret)
+            auth = .hy2(try HY2Credential.decode(secret, salamander: profile.hy2Salamander))
         case .cuvenWG:
-            guard let wireGuard = profile.wireGuard, let keys = try? WireGuardCredential.decode(secret) else {
+            guard let wireGuard = profile.wireGuard, let keys = try? WireGuardCredential.decode(
+                secret, requiresRelay: !profile.wireGuardDirect
+            ) else {
                 throw TunnelFailure.configuration
             }
             auth = .wireGuard(keys, peerPublicKey: wireGuard.peerPublicKey)
@@ -423,6 +452,7 @@ private final class Session {
 
     let id = UUID()
     let blockLAN: Bool
+    let retainsRoutesOnFailure: Bool
     let endpointLimit: Int
     var current: ConnectionProfile
     var alternate: ConnectionProfile?
@@ -443,6 +473,7 @@ private final class Session {
         current = primary
         self.alternate = alternate
         blockLAN = primary.profile.blockLAN || primary.profile.highSecurity
+        retainsRoutesOnFailure = primary.profile.usesFullRouting
         endpointLimit = alternate == nil ? 3 : 2
         self.completion = completion
     }
@@ -491,7 +522,7 @@ private enum TunnelFailure: Int, LocalizedError, CustomNSError {
         case .disconnected: "VPN 连接已断开，且无法恢复。"
         case .packetFormat: "隧道核心返回了无效的数据包。"
         case .cancelled: "VPN 连接已取消。"
-        case .strictRouting: "高安全模式的系统 VPN 路由配置不完整，请在 Cuven 中重新保存。"
+        case .strictRouting: "系统 VPN 全流量路由配置不完整，请在 Cuven 中重新保存。"
         }
     }
 }

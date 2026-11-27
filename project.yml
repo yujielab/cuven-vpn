@@ -15,7 +15,11 @@ targets:
     type: application
     platform: iOS
     sources:
-      - ios/App
+      - path: ios/App
+        excludes:
+          - PrivacyInfo.xcprivacy
+      - path: ios/App/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - ios/Shared
     settings:
       base:
@@ -96,12 +100,27 @@ targets:
     dependencies:
       - target: Cuven
 
+  CuvenUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - ios/UITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.cuven.vpn.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Cuven
+    dependencies:
+      - target: Cuven
+
 schemes:
   Cuven:
     build:
       targets:
         Cuven: all
         CuvenTests: [test]
+        CuvenUITests: [test]
     test:
       targets:
         - CuvenTests
+        - CuvenUITests

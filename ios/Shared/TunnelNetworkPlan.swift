@@ -1,6 +1,12 @@
 import Foundation
 
 struct TunnelNetworkPlan {
+    enum DNSMode: Equatable {
+        case cleartext
+        case https(URL)
+        case tls(String)
+    }
+
     struct Address {
         let host: String
         let prefix: Int
@@ -17,7 +23,7 @@ struct TunnelNetworkPlan {
     let ipv4: Address?
     let ipv6: Address?
     let dnsServers: [String]
-    let dnsOverHTTPSURL: URL?
+    let dnsMode: DNSMode
 
     init(profile: VPNProfile) throws {
         if let wireGuard = profile.wireGuard {
@@ -42,17 +48,19 @@ struct TunnelNetworkPlan {
         let hasIPv4 = ipv4 != nil
         let hasIPv6 = ipv6 != nil
         let servers: [String]
-        if profile.highSecurity {
-            if let resolver = profile.encryptedDNS {
-                dnsOverHTTPSURL = resolver.url
-                servers = resolver.bootstrapServers
-            } else {
-                guard let url = URL(string: "https://cloudflare-dns.com/dns-query") else { throw ProfileError.dns }
-                dnsOverHTTPSURL = url
-                servers = ["1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"]
+        if let resolver = profile.encryptedDNS {
+            switch (resolver.url, resolver.tlsServerName) {
+            case (let url?, nil): dnsMode = .https(url)
+            case (nil, let name?): dnsMode = .tls(name)
+            default: throw ProfileError.encryptedDNS
             }
+            servers = resolver.bootstrapServers
+        } else if profile.highSecurity {
+            guard let url = URL(string: "https://cloudflare-dns.com/dns-query") else { throw ProfileError.dns }
+            dnsMode = .https(url)
+            servers = ["1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"]
         } else {
-            dnsOverHTTPSURL = nil
+            dnsMode = .cleartext
             servers = profile.dnsServers
         }
         dnsServers = servers.filter { server in

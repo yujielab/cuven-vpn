@@ -11,7 +11,11 @@ final class VPNController: ObservableObject {
     @Published var serverName = ""
     @Published var dns = VPNProfile.defaultDNSServers.joined(separator: ", ")
     @Published var credential = ""
+    @Published var hy2Insecure = false
+    @Published var hy2Salamander = false
+    @Published var hy2ObfuscationPassword = ""
     @Published var tunnelAddresses = ""
+    @Published private(set) var wireGuardDirect = true
     @Published var peerPublicKey = ""
     @Published var privateKey = ""
     @Published var relayKey = ""
@@ -25,10 +29,13 @@ final class VPNController: ObservableObject {
     @Published var highSecurity = false
     @Published var https3Camouflage = false
     @Published var useEncryptedDNS = false
+    @Published var useDNSOverTLS = false
     @Published var encryptedDNSURL = ""
+    @Published var encryptedDNSTLSName = ""
     @Published var encryptedDNSBootstrap = ""
     @Published private(set) var autoConnectPaused = false
-    @Published private(set) var hasCredential = false
+    @Published private var hasStoredCredential = false
+    private var hasStoredRelayKey = false
     @Published private(set) var status = NEVPNStatus.invalid
     @Published private(set) var busy = false
     @Published private(set) var loaded = false
@@ -60,23 +67,39 @@ final class VPNController: ObservableObject {
     }
 
     var hasAlternateTransport: Bool {
-        enrollments.values.contains { $0.profile.transport != transport && !$0.profile.highSecurity }
+        guard let profile = try? draftProfile() else { return false }
+        return canFallBack(from: profile)
     }
 
-    private var wantsFallback: Bool {
-        automaticFallback && !highSecurity && !requirePostQuantum && hasAlternateTransport
+    private func canFallBack(from profile: VPNProfile) -> Bool {
+        enrollments.values.contains { profile.permitsAutomaticFallback(to: $0.profile) }
+    }
+
+    var hasCredential: Bool {
+        guard hasStoredCredential else { return false }
+        switch transport {
+        case .hy2: return enrollments[.hy2]?.profile.hy2Salamander == hy2Salamander
+        case .cuvenWG: return wireGuardDirect || hasStoredRelayKey
+        }
+    }
+
+    var displaysInsecureHY2: Bool {
+        if let activeTransport { return enrollments[activeTransport]?.profile.hy2Insecure == true }
+        return transport == .hy2 && hy2Insecure
     }
 
     var canSave: Bool {
         guard canStart else { return false }
-        return hasNewCredential || (try? draftProfile()) != savedProfile ||
-            wantsFallback != savedAutomaticFallback || autoConnectPaused
+        let profile = try? draftProfile()
+        let fallback = automaticFallback && (profile.map { canFallBack(from: $0) } ?? false)
+        return hasNewCredential || profile != savedProfile ||
+            fallback != savedAutomaticFallback || autoConnectPaused
     }
 
     private var hasNewCredential: Bool {
         switch transport {
-        case .hy2: !credential.isEmpty
-        case .cuvenWG: !privateKey.isEmpty || !relayKey.isEmpty || !presharedKey.isEmpty
+        case .hy2: !credential.isEmpty || (hy2Salamander && !hy2ObfuscationPassword.isEmpty)
+        case .cuvenWG: !privateKey.isEmpty || (!wireGuardDirect && !relayKey.isEmpty) || !presharedKey.isEmpty
         }
     }
 
@@ -165,8 +188,11 @@ final class VPNController: ObservableObject {
             host = ""
             port = String(selected.defaultPort)
             serverName = ""
+            hy2Insecure = false
+            hy2Salamander = false
             dns = VPNProfile.defaultDNSServers.joined(separator: ", ")
             tunnelAddresses = ""
+            wireGuardDirect = true
             peerPublicKey = ""
             useCustomDNS = false
             autoConnect = .off
@@ -176,10 +202,23 @@ final class VPNController: ObservableObject {
             highSecurity = false
             https3Camouflage = false
             useEncryptedDNS = false
+            useDNSOverTLS = false
             encryptedDNSURL = ""
+            encryptedDNSTLSName = ""
             encryptedDNSBootstrap = ""
         }
         refreshCredential()
+        error = nil
+    }
+
+    func selectWireGuardMode(direct: Bool) {
+        guard canEdit, direct != wireGuardDirect else { return }
+        let directPort = String(VPNTransport.cuvenWG.defaultPort)
+        let relayPort = "51821"
+        if port == (wireGuardDirect ? directPort : relayPort) {
+            port = direct ? directPort : relayPort
+        }
+        wireGuardDirect = direct
         error = nil
     }
 
@@ -192,7 +231,10 @@ final class VPNController: ObservableObject {
             host = result.profile.host
             port = String(result.profile.port)
             serverName = result.profile.serverName ?? ""
-            credential = result.credential
+            credential = result.credential.auth
+            hy2Insecure = result.profile.hy2Insecure
+            hy2Salamander = result.profile.hy2Salamander
+            hy2ObfuscationPassword = result.credential.obfuscationPassword ?? ""
             error = nil
             return true
         } catch {
@@ -208,9 +250,10 @@ final class VPNController: ObservableObject {
         defer { busy = false }
         do {
             let profile = try draftProfile()
-            if profile != savedProfile || hasNewCredential || wantsFallback != savedAutomaticFallback ||
+            let fallback = automaticFallback && canFallBack(from: profile)
+            if profile != savedProfile || hasNewCredential || fallback != savedAutomaticFallback ||
                 autoConnectPaused || !manager.isEnabled {
-                try await persist(profile, manager: manager)
+                try await persist(profile, fallback: fallback, manager: manager)
             }
             refreshStatus()
             if connect && (status == .invalid || status == .disconnected) {
@@ -250,11 +293,10 @@ final class VPNController: ObservableObject {
         refreshStatus()
     }
 
-    private func persist(_ profile: VPNProfile, manager: NETunnelProviderManager) async throws {
+    private func persist(_ profile: VPNProfile, fallback: Bool, manager: NETunnelProviderManager) async throws {
         let profileData = try JSONEncoder().encode(profile)
         let previous = manager.protocolConfiguration as? NETunnelProviderProtocol
         let previousReference = enrollments[profile.transport]?.reference
-        let fallback = wantsFallback
         var providerConfiguration: [String: Any] = [
             TunnelConfiguration.profileKey: profileData,
             TunnelConfiguration.automaticFallbackKey: fallback
@@ -266,7 +308,7 @@ final class VPNController: ObservableObject {
         let reference: Data
         if hasNewCredential {
             reference = try KeychainCredential.store(newCredential())
-        } else if let previousReference {
+        } else if hasCredential, let previousReference {
             _ = try KeychainCredential.load(reference: previousReference)
             reference = previousReference
         } else {
@@ -279,9 +321,9 @@ final class VPNController: ObservableObject {
         configuration.passwordReference = reference
         providerConfiguration[TunnelConfiguration.credentialKey] = reference
         configuration.providerConfiguration = providerConfiguration
-        configuration.includeAllNetworks = profile.highSecurity || profile.preventBypass
+        configuration.includeAllNetworks = profile.usesFullRouting
         configuration.enforceRoutes = profile.blockLAN && !configuration.includeAllNetworks
-        configuration.excludeLocalNetworks = !profile.highSecurity && !profile.blockLAN
+        configuration.excludeLocalNetworks = !profile.requiresEncryptedDNS && !profile.blockLAN
         if profile.highSecurity {
             configuration.excludeAPNs = false
             configuration.excludeCellularServices = false
@@ -310,7 +352,6 @@ final class VPNController: ObservableObject {
         if let previousReference, previousReference != reference {
             KeychainCredential.remove(reference: previousReference)
         }
-        hasCredential = true
         clearCredentials()
         enrollments[profile.transport] = Enrollment(profile: profile, reference: reference)
         savedProfile = profile
@@ -318,6 +359,7 @@ final class VPNController: ObservableObject {
         automaticFallback = fallback
         autoConnectPaused = false
         apply(profile)
+        refreshCredential()
         try await manager.loadFromPreferences()
     }
 
@@ -351,51 +393,71 @@ final class VPNController: ObservableObject {
             wireGuard = nil
         }
         let encryptedDNS: EncryptedDNSProfile?
-        if highSecurity && useEncryptedDNS {
-            let text = encryptedDNSURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let url = URL(string: text) else { throw ProfileError.encryptedDNS }
-            encryptedDNS = EncryptedDNSProfile(
-                url: url, bootstrapServers: Self.splitList(encryptedDNSBootstrap)
-            )
+        if useEncryptedDNS {
+            let servers = Self.splitList(encryptedDNSBootstrap)
+            if useDNSOverTLS {
+                let name = encryptedDNSTLSName.trimmingCharacters(in: .whitespacesAndNewlines)
+                encryptedDNS = EncryptedDNSProfile(tlsServerName: name, bootstrapServers: servers)
+            } else {
+                let text = encryptedDNSURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let url = URL(string: text) else { throw ProfileError.encryptedDNS }
+                encryptedDNS = EncryptedDNSProfile(url: url, bootstrapServers: servers)
+            }
         } else {
             encryptedDNS = nil
         }
-        return try VPNProfile(
-            host: host, transport: transport, wireGuard: wireGuard, port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 0,
+        let profile = try VPNProfile(
+            host: host, transport: transport, wireGuard: wireGuard, wireGuardDirect: wireGuardDirect,
+            port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 0,
             serverName: serverName, customDNSServers: Self.splitList(dns), useCustomDNS: useCustomDNS,
             autoConnect: autoConnect, requirePostQuantum: requirePostQuantum,
             blockLAN: blockLAN, preventBypass: preventBypass, highSecurity: highSecurity,
-            https3Camouflage: https3Camouflage, encryptedDNS: encryptedDNS
+            https3Camouflage: https3Camouflage, encryptedDNS: encryptedDNS,
+            hy2Insecure: hy2Insecure, hy2Salamander: hy2Salamander
         )
+        _ = try TunnelNetworkPlan(profile: profile)
+        return profile
     }
 
     private func newCredential() throws -> String {
         switch transport {
         case .hy2:
-            return credential
+            return try HY2Credential(
+                auth: credential, obfuscationPassword: hy2Salamander ? hy2ObfuscationPassword : nil
+            ).encoded(salamander: hy2Salamander)
         case .cuvenWG:
             let preshared = presharedKey.trimmingCharacters(in: .whitespacesAndNewlines)
             return try WireGuardCredential(
                 privateKey: privateKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                relayKey: relayKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                relayKey: wireGuardDirect ? nil : relayKey.trimmingCharacters(in: .whitespacesAndNewlines),
                 presharedKey: preshared.isEmpty ? nil : preshared
-            ).encoded()
+            ).encoded(requiresRelay: !wireGuardDirect)
         }
     }
 
     private func clearCredentials() {
         credential = ""
+        hy2ObfuscationPassword = ""
         privateKey = ""
         relayKey = ""
         presharedKey = ""
     }
 
     private func refreshCredential() {
-        guard let reference = enrollments[transport]?.reference else {
-            hasCredential = false
+        hasStoredRelayKey = false
+        guard let enrollment = enrollments[transport],
+              let stored = try? KeychainCredential.load(reference: enrollment.reference) else {
+            hasStoredCredential = false
             return
         }
-        hasCredential = (try? KeychainCredential.load(reference: reference)) != nil
+        switch transport {
+        case .hy2:
+            hasStoredCredential = (try? HY2Credential.decode(stored, salamander: enrollment.profile.hy2Salamander)) != nil
+        case .cuvenWG:
+            let keys = try? WireGuardCredential.decode(stored, requiresRelay: false)
+            hasStoredRelayKey = keys?.relayKey != nil
+            hasStoredCredential = keys != nil
+        }
     }
 
     private static func splitList(_ text: String) -> [String] {
@@ -404,11 +466,14 @@ final class VPNController: ObservableObject {
 
     private func apply(_ profile: VPNProfile) {
         transport = profile.transport
+        wireGuardDirect = profile.transport == .hy2 || profile.wireGuardDirect
         tunnelAddresses = profile.wireGuard?.tunnelAddresses.joined(separator: ", ") ?? ""
         peerPublicKey = profile.wireGuard?.peerPublicKey ?? ""
         host = profile.host
         port = String(profile.port)
         serverName = profile.serverName ?? ""
+        hy2Insecure = profile.hy2Insecure
+        hy2Salamander = profile.hy2Salamander
         dns = profile.customDNSServers.joined(separator: ", ")
         useCustomDNS = profile.useCustomDNS
         autoConnect = profile.autoConnect
@@ -418,7 +483,9 @@ final class VPNController: ObservableObject {
         highSecurity = profile.highSecurity
         https3Camouflage = profile.https3Camouflage
         useEncryptedDNS = profile.encryptedDNS != nil
-        encryptedDNSURL = profile.encryptedDNS?.url.absoluteString ?? ""
+        useDNSOverTLS = profile.encryptedDNS?.tlsServerName != nil
+        encryptedDNSURL = profile.encryptedDNS?.url?.absoluteString ?? ""
+        encryptedDNSTLSName = profile.encryptedDNS?.tlsServerName ?? ""
         encryptedDNSBootstrap = profile.encryptedDNS?.bootstrapServers.joined(separator: ", ") ?? ""
     }
 }

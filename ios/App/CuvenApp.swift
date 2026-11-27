@@ -33,6 +33,11 @@ private struct ConnectionView: View {
                         Text((vpn.activeTransport ?? vpn.transport).title)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
+                        if vpn.displaysInsecureHY2 {
+                            Label("服务器证书校验已关闭", systemImage: "exclamationmark.triangle.fill")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
                         if !vpn.displayedHost.isEmpty {
                             Text(vpn.displayedHost)
                                 .font(.subheadline.monospaced())
@@ -83,6 +88,18 @@ private struct ConnectionView: View {
                         SecureField(vpn.hasCredential ? "凭据已保存，输入以替换" : "连接凭据", text: $vpn.credential)
                             .cuvenSecureInput()
                             .accessibilityLabel("HY2 连接凭据")
+                        Toggle("Salamander", isOn: $vpn.hy2Salamander)
+                        if vpn.hy2Salamander {
+                            SecureField(
+                                vpn.hasCredential ? "混淆密码已保存" : "Salamander 混淆密码",
+                                text: $vpn.hy2ObfuscationPassword
+                            )
+                            .cuvenSecureInput()
+                            .accessibilityLabel("Salamander 混淆密码")
+                            Text("更换凭据时请同时填写连接凭据和混淆密码。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
 
                         Button {
                             showsImport = true
@@ -90,24 +107,32 @@ private struct ConnectionView: View {
                             Label("导入 HY2 链接", systemImage: "link")
                         }
                     } else {
+                        Picker("连接方式", selection: Binding(
+                            get: { vpn.wireGuardDirect }, set: { vpn.selectWireGuardMode(direct: $0) }
+                        )) {
+                            Text("直连").tag(true)
+                            Text("Cuven 中继").tag(false)
+                        }
                         TextField("隧道地址，例如 10.66.0.2/32", text: $vpn.tunnelAddresses)
                             .cuvenPlainInput()
-                            .accessibilityLabel("Cuven WG 隧道地址")
+                            .accessibilityLabel("WireGuard 隧道地址")
                         TextField("服务端 WireGuard 公钥", text: $vpn.peerPublicKey)
                             .cuvenPlainInput()
                             .accessibilityLabel("服务端 WireGuard 公钥")
                         SecureField(vpn.hasCredential ? "客户端私钥已保存" : "客户端 WireGuard 私钥", text: $vpn.privateKey)
                             .cuvenSecureInput()
                             .accessibilityLabel("客户端 WireGuard 私钥")
-                        SecureField(vpn.hasCredential ? "封装密钥已保存" : "Cuven 封装密钥", text: $vpn.relayKey)
-                            .cuvenSecureInput()
-                            .accessibilityLabel("Cuven 封装密钥")
+                        if !vpn.wireGuardDirect {
+                            SecureField(vpn.hasCredential ? "封装密钥已保存" : "Cuven 封装密钥", text: $vpn.relayKey)
+                                .cuvenSecureInput()
+                                .accessibilityLabel("Cuven 封装密钥")
+                            Text("更换中继凭据时请同时填写私钥和封装密钥。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                         SecureField("WireGuard 预共享密钥（可选）", text: $vpn.presharedKey)
                             .cuvenSecureInput()
                             .accessibilityLabel("可选的 WireGuard 预共享密钥")
-                        Text("Cuven WG 连接配套中继。替换密钥时，请重新填写私钥和封装密钥。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
                     }
                 }
                 .disabled(!vpn.canEdit)
@@ -118,6 +143,7 @@ private struct ConnectionView: View {
                     } label: {
                         Label("连接设置", systemImage: "slider.horizontal.3")
                     }
+                    .accessibilityIdentifier("connection-settings")
                     if vpn.canSave {
                         Button(vpn.autoConnectPaused && vpn.autoConnect != .off ? "保存并恢复自动连接" : "保存设置") {
                             Task { await vpn.save(connect: false) }
@@ -194,9 +220,9 @@ private struct NetworkSettingsView: View {
 
             Section {
                 Toggle("自动回退协议", isOn: $vpn.automaticFallback)
-                    .disabled(!vpn.hasAlternateTransport || vpn.requirePostQuantum || vpn.highSecurity)
+                    .disabled(!vpn.hasAlternateTransport)
             } footer: {
-                Text("保存两种协议的普通模式配置后可启用。首选服务器连接失败时尝试另一种协议。高安全模式和严格后量子模式保持使用当前协议。")
+                Text("首选服务器连接失败时，尝试符合当前安全设置的备用协议。自定义加密 DNS 要求两份配置使用同一解析器。")
             }
             .disabled(!vpn.canEdit)
 
@@ -205,9 +231,14 @@ private struct NetworkSettingsView: View {
                     TextField("TLS 服务器名称（可选）", text: $vpn.serverName)
                         .cuvenPlainInput()
                         .keyboardType(.URL)
+                    Toggle("关闭服务器证书校验", isOn: $vpn.hy2Insecure)
                     Toggle("要求后量子密钥交换", isOn: $vpn.requirePostQuantum)
                 } footer: {
-                    Text("启用后，HY2 只接受 TLS 1.3 的 X25519MLKEM768 混合密钥交换。服务器需要支持该算法。")
+                    if vpn.hy2Insecure {
+                        Text("关闭校验后，冒充服务器的一方可能获取连接凭据。高安全模式和严格后量子模式需要验证证书。")
+                    } else {
+                        Text("严格后量子模式需要服务端支持 TLS 1.3 的 X25519MLKEM768 混合密钥交换。")
+                    }
                 }
                 .disabled(!vpn.canEdit)
             }
@@ -220,14 +251,14 @@ private struct NetworkSettingsView: View {
                 }
             } footer: {
                 if vpn.highSecurity {
-                    Text("强制路由和隧道内 HTTPS DNS。WebRTC 随 VPN 出口通行。服务器需填写 IP，Cuven WG 使用 v2 中继。")
+                    Text("强制路由和隧道内加密 DNS。WebRTC 随 VPN 出口通行。服务器需填写 IP。")
                 } else {
                     Text("局域网开关控制隧道期间的本地网络访问。防绕过由 iOS 强制路由，部分系统流量仍由 iOS 处理。")
                 }
             }
             .disabled(!vpn.canEdit)
 
-            if vpn.highSecurity && vpn.transport == .cuvenWG {
+            if vpn.highSecurity && vpn.transport == .cuvenWG && !vpn.wireGuardDirect {
                 Section {
                     Toggle("HTTPS/3 载体", isOn: $vpn.https3Camouflage)
                     if vpn.https3Camouflage {
@@ -242,28 +273,36 @@ private struct NetworkSettingsView: View {
             }
 
             Section {
-                if vpn.highSecurity {
-                    Toggle("自定义加密 DNS", isOn: $vpn.useEncryptedDNS)
-                    if vpn.useEncryptedDNS {
+                Toggle(vpn.highSecurity ? "自定义加密 DNS" : "加密 DNS", isOn: $vpn.useEncryptedDNS)
+                if vpn.useEncryptedDNS {
+                    Picker("加密协议", selection: $vpn.useDNSOverTLS) {
+                        Text("DNS over HTTPS").tag(false)
+                        Text("DNS over TLS").tag(true)
+                    }
+                    if vpn.useDNSOverTLS {
+                        TextField("DoT 证书域名", text: $vpn.encryptedDNSTLSName)
+                            .cuvenPlainInput()
+                            .keyboardType(.URL)
+                    } else {
                         TextField("HTTPS DNS URL", text: $vpn.encryptedDNSURL)
                             .cuvenPlainInput()
                             .keyboardType(.URL)
-                        TextField("解析器公网 IP，逗号分隔", text: $vpn.encryptedDNSBootstrap)
-                            .cuvenPlainInput()
-                    } else {
-                        LabeledContent("DNS", value: "Cloudflare HTTPS")
                     }
+                    TextField("解析器公网 IP，逗号分隔", text: $vpn.encryptedDNSBootstrap)
+                        .cuvenPlainInput()
+                } else if vpn.highSecurity {
+                    LabeledContent("DNS", value: "Cloudflare HTTPS")
                 } else {
                     Toggle("自定义 DNS", isOn: $vpn.useCustomDNS)
-                }
-                if !vpn.highSecurity && vpn.useCustomDNS {
-                    TextField("DNS 地址，逗号分隔", text: $vpn.dns)
-                        .cuvenPlainInput()
-                        .accessibilityLabel("自定义 DNS 服务器地址")
+                    if vpn.useCustomDNS {
+                        TextField("DNS 地址，逗号分隔", text: $vpn.dns)
+                            .cuvenPlainInput()
+                            .accessibilityLabel("自定义 DNS 服务器地址")
+                    }
                 }
             } footer: {
-                if vpn.highSecurity {
-                    Text("HTTPS DNS 经过 VPN 隧道。自定义解析器使用指定 IP 建立连接，并校验 URL 对应的证书。")
+                if vpn.highSecurity || vpn.useEncryptedDNS {
+                    Text("加密 DNS 经过 VPN 隧道并校验解析器证书。DNS over TLS 使用 TCP 853。")
                 } else {
                     Text("支持 IPv4 和 IPv6 DNS。关闭时使用 Cuven 的默认 DNS。启用局域网阻止时请使用公网 DNS。查询通过隧道传输。")
                 }

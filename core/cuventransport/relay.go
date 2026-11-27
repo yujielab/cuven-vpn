@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	defaultMaxPeers = 64
-	maxRelayPeers   = 256
-	defaultPeerIdle = time.Minute
-	replayCapacity  = 65536
+	defaultMaxPeers     = 64
+	maxRelayPeers       = 256
+	defaultPeerIdle     = time.Minute
+	replayCapacity      = 65536
+	probeReplayCapacity = 4096
 )
 
 // RelayConfig configures a UDP listener with one deployment key.
@@ -81,6 +82,7 @@ func ServeRelay(ctx context.Context, listener *net.UDPConn, cfg RelayConfig) err
 	var cleartext [MaxDatagramSize]byte
 	var nextSweep time.Time
 	replays := newReplayCache(replayCapacity)
+	probeReplays := newReplayCache(probeReplayCapacity)
 	upstream := net.UDPAddrFromAddrPort(cfg.Upstream)
 	for {
 		now := time.Now()
@@ -108,6 +110,10 @@ func ServeRelay(ctx context.Context, listener *net.UDPConn, cfg RelayConfig) err
 			continue
 		}
 		if kind == Probe {
+			// Keep probe nonces independent of the high-volume data window.
+			if !probeReplays.add(codec.nonce(packet[:n])) {
+				continue
+			}
 			if ack, err := codec.sealProbeAck(payload, n); err == nil {
 				_, _ = listener.WriteToUDPAddrPort(ack, remote)
 			}
@@ -201,8 +207,8 @@ func isWireGuardFrame(payload []byte) bool {
 
 type packetNonce [headerSize - nonceStart]byte
 
-// replayCache covers the most recent authenticated data nonces across all
-// source addresses. WireGuard independently enforces end-to-end replay checks.
+// replayCache covers the most recent authenticated nonces across source
+// addresses. WireGuard independently enforces end-to-end data replay checks.
 type replayCache struct {
 	ring []packetNonce
 	seen map[packetNonce]struct{}

@@ -63,6 +63,33 @@ func TestVersion2Envelope(t *testing.T) {
 	}
 }
 
+func TestVersion2PaddingGroupsNearbySizes(t *testing.T) {
+	for _, size := range []int{32, 63, 84} {
+		if first, last := paddedLengthRange(size); first != 128 || last != 191 {
+			t.Fatalf("payload %d produces wire range %d–%d, want 128–191", size, first, last)
+		}
+	}
+	for size := 1; size <= MaxPayloadSize; size++ {
+		first, last := paddedLengthRange(size)
+		base := size + v2Overhead
+		if first < base || last < first || last-base > paddingLimit(size) {
+			t.Fatalf("wire range %d–%d falls outside the v2 limits for payload %d", first, last, size)
+		}
+	}
+
+	codec := testVersionCodec(t, 7, Version2)
+	payload := bytes.Repeat([]byte{0x42}, 32)
+	// Older encoders could choose zero padding at this size.
+	packet, err := codec.sealV2(ClientToServer, Data, payload, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, decoded, err := codec.Open(ClientToServer, packet)
+	if err != nil || kind != Data || !bytes.Equal(decoded, payload) {
+		t.Fatalf("opening a legacy v2 envelope: kind %v, error %v", kind, err)
+	}
+}
+
 func TestVersion2RejectsInvalidEncryptedMetadata(t *testing.T) {
 	codec := testVersionCodec(t, 7, Version2)
 	for i, test := range []struct {

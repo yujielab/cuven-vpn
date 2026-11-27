@@ -72,29 +72,41 @@ func TestWriteBatchPrivacyPolicy(t *testing.T) {
 	binary.BigEndian.PutUint16(tcp[2:4], 443)
 	tcp[12] = 0x50
 	https := ipv4(6, tcp)
+	binary.BigEndian.PutUint16(tcp[2:4], 853)
+	dot := ipv4(6, tcp)
 	var batch []byte
-	for _, packet := range [][]byte{stun, quic, dns, https} {
+	for _, packet := range [][]byte{stun, quic, dns, https, dot} {
 		batch = binary.BigEndian.AppendUint16(batch, uint16(len(packet)))
 		batch = append(batch, packet...)
 	}
 
 	for _, test := range []struct {
-		name   string
-		policy packetPolicy
-		want   [][]byte
+		name         string
+		policy       packetPolicy
+		encryptedDNS bool
+		want         [][]byte
 	}{
-		{"normal", packetPolicy{}, [][]byte{stun, quic, dns, https}},
-		{"high security", packetPolicy{blockPlainDNS: true}, [][]byte{stun, quic, https}},
+		{"normal", packetPolicy{}, false, [][]byte{stun, quic, dns, https, dot}},
+		{"high security", packetPolicy{blockPlainDNS: true}, false, [][]byte{stun, quic, https, dot}},
+		{"encrypted DNS", packetPolicy{}, true, [][]byte{stun, quic, https, dot}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			engine, sink := NewEngine(), &recordingTunnel{}
 			defer engine.Stop()
+			if test.encryptedDNS {
+				if err := engine.RequireEncryptedDNS(); err != nil {
+					t.Fatal(err)
+				}
+			}
 			open := func(context.Context) (packetTunnel, io.Closer, error) { return sink, nil, nil }
 			if err := engine.start(1280, test.policy, open); err != nil {
 				t.Fatal(err)
 			}
 			if err := engine.WriteBatch(batch); err != nil {
 				t.Fatal(err)
+			}
+			if err := engine.RequireEncryptedDNS(); !errors.Is(err, errEngineUsed) {
+				t.Fatalf("changing DNS policy after startup returned %v", err)
 			}
 			if !slices.EqualFunc(sink.packets, test.want, bytes.Equal) {
 				t.Fatalf("forwarded packets: got %x, want %x", sink.packets, test.want)

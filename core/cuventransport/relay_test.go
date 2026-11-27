@@ -48,6 +48,16 @@ func testRelayTraffic(t *testing.T, version Version) {
 	if err != nil || kind != ProbeAck || !bytes.Equal(payload, token) || len(probe) != len(ack) {
 		t.Fatalf("relay sent invalid ProbeAck; kind %v, error %v", kind, err)
 	}
+	freshToken := bytes.Repeat([]byte{4}, TokenSize)
+	write(t, b, remote, probe)
+	write(t, b, remote, encode(t, other, Probe, bytes.Repeat([]byte{5}, TokenSize)))
+	freshProbe := encode(t, codec, Probe, freshToken)
+	write(t, b, remote, freshProbe)
+	ack, _ = read(t, b)
+	kind, payload, err = codec.Open(ServerToClient, ack)
+	if err != nil || kind != ProbeAck || !bytes.Equal(payload, freshToken) || len(freshProbe) != len(ack) {
+		t.Fatalf("relay did not acknowledge only the fresh authenticated probe; kind %v, error %v", kind, err)
+	}
 
 	packetA := wireGuardData(0xaa)
 	packetB := wireGuardData(0xbb)

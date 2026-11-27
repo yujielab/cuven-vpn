@@ -40,10 +40,11 @@ const (
 // Engine owns one VPN session and its packet pipeline.
 // Create a new engine for each connection attempt.
 type Engine struct {
-	mu     sync.Mutex
-	state  engineState
-	cancel context.CancelFunc
-	live   *session
+	mu             sync.Mutex
+	state          engineState
+	cancel         context.CancelFunc
+	live           *session
+	rejectPlainDNS bool
 }
 
 type session struct {
@@ -69,11 +70,31 @@ type packetTunnel interface {
 // NewEngine constructs an idle packet engine for the native tunnel provider.
 func NewEngine() *Engine { return &Engine{} }
 
+// RequireEncryptedDNS enables plaintext DNS filtering for any transport.
+// Configure it before starting the engine.
+func (e *Engine) RequireEncryptedDNS() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.state != engineIdle {
+		return errEngineUsed
+	}
+	e.rejectPlainDNS = true
+	return nil
+}
+
 // Start establishes the transport and initializes the IP stack. Stop may be
 // called concurrently to cancel startup. The address includes the server port.
 func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, mtu int64, requirePostQuantum, blockLAN, highSecurity bool) error {
+	return e.StartHY2(address, auth, serverName, "", false, receiveBytesPerSecond, mtu, requirePostQuantum, blockLAN, highSecurity)
+}
+
+// StartHY2 also supports the optional Salamander transport and per-profile TLS policy.
+func (e *Engine) StartHY2(address, auth, serverName, salamanderPassword string, insecureTLS bool, receiveBytesPerSecond, mtu int64, requirePostQuantum, blockLAN, highSecurity bool) error {
 	if receiveBytesPerSecond < 0 {
 		return errInvalidRate
+	}
+	if insecureTLS && highSecurity {
+		return errors.New("high-security Hysteria requires TLS certificate verification")
 	}
 	policy := packetPolicy{blockPlainDNS: highSecurity}
 	return e.start(mtu, policy, func(ctx context.Context) (packetTunnel, io.Closer, error) {
@@ -83,6 +104,8 @@ func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, 
 			ServerName:            serverName,
 			ReceiveBytesPerSecond: uint64(receiveBytesPerSecond),
 			RequirePostQuantum:    requirePostQuantum,
+			InsecureTLS:           insecureTLS,
+			SalamanderPassword:    salamanderPassword,
 		})
 		if err != nil {
 			return nil, nil, err
@@ -105,17 +128,32 @@ func (e *Engine) Start(address, auth, serverName string, receiveBytesPerSecond, 
 // HTTPS/3 uses a relay with a matching v2 envelope and a trusted certificate.
 func (e *Engine) StartWireGuard(endpoint, privateKey, peerPublicKey, presharedKey, transportKey string, mtu int64, blockLAN, camouflage, https3 bool, serverName string) error {
 	policy := packetPolicy{blockLAN: blockLAN, blockPlainDNS: camouflage}
+	return e.startWireGuard(mtu, policy, wg.Config{
+		Endpoint:      endpoint,
+		PrivateKey:    privateKey,
+		PeerPublicKey: peerPublicKey,
+		PresharedKey:  presharedKey,
+		TransportKey:  transportKey,
+		Camouflage:    camouflage,
+		HTTPS3:        https3,
+		ServerName:    serverName,
+	})
+}
+
+// StartDirectWireGuard connects to a standard WireGuard peer.
+func (e *Engine) StartDirectWireGuard(endpoint, privateKey, peerPublicKey, presharedKey string, mtu int64, blockLAN, highSecurity bool) error {
+	return e.startWireGuard(mtu, packetPolicy{blockLAN: blockLAN, blockPlainDNS: highSecurity}, wg.Config{
+		Endpoint:      endpoint,
+		PrivateKey:    privateKey,
+		PeerPublicKey: peerPublicKey,
+		PresharedKey:  presharedKey,
+		Direct:        true,
+	})
+}
+
+func (e *Engine) startWireGuard(mtu int64, policy packetPolicy, config wg.Config) error {
 	return e.start(mtu, policy, func(ctx context.Context) (packetTunnel, io.Closer, error) {
-		stack, err := wg.Open(ctx, wg.Config{
-			Endpoint:      endpoint,
-			PrivateKey:    privateKey,
-			PeerPublicKey: peerPublicKey,
-			PresharedKey:  presharedKey,
-			TransportKey:  transportKey,
-			Camouflage:    camouflage,
-			HTTPS3:        https3,
-			ServerName:    serverName,
-		}, int(mtu))
+		stack, err := wg.Open(ctx, config, int(mtu))
 		return stack, nil, err
 	})
 }
@@ -130,6 +168,7 @@ func (e *Engine) start(mtu int64, policy packetPolicy, open func(context.Context
 		e.mu.Unlock()
 		return errEngineUsed
 	}
+	policy.blockPlainDNS = policy.blockPlainDNS || e.rejectPlainDNS
 	ctx, cancel := context.WithCancel(context.Background())
 	e.state = engineStarting
 	e.cancel = cancel

@@ -4,7 +4,9 @@
 // The entire header is authenticated as additional data. Version 2 transmits
 // only a random nonce followed by the ciphertext and tag. Its encrypted data
 // starts with a one-byte kind and a two-byte big-endian payload length, then the
-// payload and up to 128 random padding bytes. HKDF-SHA256 derives an independent
+// payload and up to 128 random padding bytes. The encoder groups lengths into
+// 64-byte blocks and randomizes the envelope length within each output block.
+// HKDF-SHA256 derives an independent
 // key per version and direction using an empty salt and a versioned info label.
 package cuventransport
 
