@@ -81,6 +81,26 @@ final class VPNProfileTests: XCTestCase {
         guard case .https = plan.dnsMode else { return XCTFail("Cuven must use encrypted DNS by default") }
     }
 
+    func testPacketFlowRestoresSettingsAfterRepeatedWriteFailure() {
+        var flow = PacketFlowState()
+        XCTAssertNil(flow.mtu)
+        XCTAssertTrue(flow.needsSettings(mtu: 1500))
+        flow.didApplySettings(mtu: 1500)
+        XCTAssertFalse(flow.needsSettings(mtu: 1500))
+        XCTAssertTrue(flow.needsSettings(mtu: 1280))
+
+        XCTAssertFalse(flow.shouldRecoverAfterWrite(succeeded: false))
+        XCTAssertFalse(flow.shouldRecoverAfterWrite(succeeded: true))
+        XCTAssertFalse(flow.needsSettings(mtu: 1500))
+        XCTAssertFalse(flow.shouldRecoverAfterWrite(succeeded: false))
+        XCTAssertTrue(flow.shouldRecoverAfterWrite(succeeded: false))
+        XCTAssertEqual(flow.mtu, 1500)
+        XCTAssertTrue(flow.needsSettings(mtu: 1500))
+        flow.didApplySettings(mtu: 1500)
+        XCTAssertFalse(flow.needsSettings(mtu: 1500))
+        XCTAssertFalse(flow.shouldRecoverAfterWrite(succeeded: false))
+    }
+
     func testUplinkBatchesPreserveOrderAndStopWritingAfterFailure() throws {
         let plan = try TunnelNetworkPlan(profile: VPNProfile(host: "gateway.example", transport: .cuven))
         let blockedIPv6 = Data([0x60, 0])

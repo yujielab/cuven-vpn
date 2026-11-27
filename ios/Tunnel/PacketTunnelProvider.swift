@@ -206,10 +206,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     self.connectionFailed(session, failure: .settings)
                     return
                 }
-                if session.installedMTU == mtu {
-                    self.activate(session, engine: engine)
-                } else {
+                if session.packetFlowState.needsSettings(mtu: mtu) {
                     self.installRoutes(session, engine: engine, mtu: mtu)
+                } else {
+                    self.activate(session, engine: engine)
                 }
             }
         }
@@ -258,7 +258,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     }
                     return
                 }
-                session.installedMTU = mtu
+                session.packetFlowState.didApplySettings(mtu: mtu)
                 if session.monitor == nil { self.startPathMonitor(session) }
                 self.activate(session, engine: engine)
             }
@@ -282,7 +282,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let self else { return }
             self.state.async {
                 guard let session = self.session, session.id == sessionID, session.ready,
-                      let engine = session.engine, let mtu = session.installedMTU else {
+                      let engine = session.engine, let mtu = session.packetFlowState.mtu else {
                     self.finishPacketRead()
                     return
                 }
@@ -318,8 +318,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     self.connectionFailed(session)
                     return
                 }
-                if let mtu = session.installedMTU, let decoded = PacketBatch.decode(batch, mtu: mtu) {
-                    _ = self.packetFlow.writePackets(decoded.packets, withProtocols: decoded.protocols)
+                if let mtu = session.packetFlowState.mtu, let decoded = PacketBatch.decode(batch, mtu: mtu) {
+                    let written = self.packetFlow.writePackets(decoded.packets, withProtocols: decoded.protocols)
+                    // A batch may have been partly delivered. Do not replay it.
+                    if session.packetFlowState.shouldRecoverAfterWrite(succeeded: written) {
+                        self.connectionFailed(session, failure: .settings)
+                        return
+                    }
                 } else {
                     if session.retainsRoutesOnFailure {
                         self.connectionFailed(session)
@@ -450,8 +455,8 @@ private final class Session {
     private var completion: ((Error?) -> Void)?
     var engine: MobileEngine?
     var endpoints = GatewayEndpoints()
-    var installedMTU: Int?
-    var routesInstalled: Bool { installedMTU != nil }
+    var packetFlowState = PacketFlowState()
+    var routesInstalled: Bool { packetFlowState.mtu != nil }
     var ready = false
     var sleepInterval = TunnelSleepInterval()
     var connectedAt: DispatchTime?
