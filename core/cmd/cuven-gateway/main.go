@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"log"
@@ -32,12 +33,50 @@ func main() {
 	tokenPath := flag.String("token-file", "", "file containing the client's enrollment token")
 	modelPath := flag.String("model-file", "", "optional local link health model")
 	dual := flag.Bool("ipv6", false, "forward IPv6 for the enrolled client")
+	checkTLS := flag.Bool("check-tls", false, "check the configured TLS identity and exit")
+	name := flag.String("tls-name", "", "client's expected gateway name or IP address for -check-tls")
 	flag.Parse()
+	if *checkTLS {
+		if err := checkTLSIdentity(*cert, *key, *name); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, *listen, *cert, *key, *tokenPath, *modelPath, *dual); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// Check the leaf with the same hostname and server-auth rules as the mobile
+// client. Device trust in the issuing CA is checked during the actual handshake.
+func checkTLSIdentity(certFile, keyFile, name string) error {
+	if strings.Contains(name, ":") && net.ParseIP(name) == nil {
+		return fmt.Errorf("网关 IPv6 地址格式无效")
+	}
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("无法读取匹配的网关证书和未加密的私钥: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return err
+	}
+	if len(leaf.DNSNames) == 0 && len(leaf.IPAddresses) == 0 {
+		return fmt.Errorf("网关证书的主题备用名称 (SAN) 需要包含 DNS 名称或 IP 地址")
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(leaf)
+	_, err = leaf.Verify(x509.VerifyOptions{
+		Roots:     roots,
+		DNSName:   name,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	if err != nil {
+		return fmt.Errorf("网关证书未通过 TLS 服务端身份检查: %w", err)
+	}
+	return nil
 }
 
 func run(ctx context.Context, listen, cert, key, tokenPath, modelPath string, dual bool) error {

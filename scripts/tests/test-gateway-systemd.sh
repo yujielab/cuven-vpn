@@ -44,6 +44,9 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
     -subj /CN=gateway.example -addext subjectAltName=DNS:gateway.example -days 1 \
     -keyout "$work/qa.key" -out "$work/qa.crt" >/dev/null 2>&1
 
+openssl req -x509 -key "$work/qa.key" -days 1 -subj /CN=other.example -addext subjectAltName=DNS:other.example -out "$work/other.crt"
+openssl req -x509 -key "$work/qa.key" -subj /CN=gateway.example -days 1 -out "$work/legacy.crt"
+
 # Stage the exact installer output without registering the production unit.
 cat >"$work/shim/systemctl" <<'SHIM'
 #!/bin/sh
@@ -69,10 +72,19 @@ in_network unshare --mount --propagation private -- bash -eu -c '
     export PATH="$work/shim:$PATH" CUVEN_TEST_FAULT="$work/fail-once" CUVEN_TEST_RESTART_FAULT="$work/fail-restart"
     args=(--domain gateway.example --port 4433 --cert "$work/qa.crt" --key "$work/qa.key" --ipv4-only)
     setup(){ bash "$work/pkg/deploy/setup-gateway.sh" "${args[@]}" "$@"; }
+    # A CN-only certificate is rejected before an enrollment or live unit exists.
+    if setup --cert "$work/legacy.crt"; then exit 1; fi
+    [[ ! -e /etc/cuven-gateway && ! -e /etc/systemd/system/cuven-gateway.service ]]
     touch "$CUVEN_TEST_FAULT"
     if setup; then exit 1; else [[ $? == 75 ]]; fi
     [[ ! -e /etc/cuven-gateway && ! -e /etc/systemd/system/cuven-gateway.service ]]
     setup
+    [[ $(cat /etc/cuven-gateway/gateway-name) == gateway.example ]]
+    cp "$work/qa.crt" "$work/original.crt"
+    cp "$work/other.crt" "$work/qa.crt"
+    if bash "$work/pkg/deploy/setup-gateway.sh" --upgrade; then exit 1; fi
+    cp "$work/original.crt" "$work/qa.crt"
+    bash "$work/pkg/deploy/setup-gateway.sh" --upgrade
     token_before=$(sha256sum /etc/cuven-gateway/token)
     setup
     if setup --port 4513; then exit 1; fi

@@ -62,11 +62,17 @@ if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
         grep -Eq "^ExecStart=.* -ipv6=$expected_ipv6([[:space:]]|$)" "$unit" || changed
     fi
     bash "$installer_dir/check-certificate-dates.sh" "$current_cert"
-    if [[ -n "$domain" ]]; then
-        if ! openssl x509 -in "$current_cert" -noout -checkhost "$domain" | grep -Fxq "Hostname $domain does match certificate"; then
-            fail '已有网关证书与输入域名不匹配。更换配置请加 --reconfigure。'
-        fi
+    if [[ -z "$domain" && -f /etc/cuven-gateway/gateway-name ]]; then
+        IFS= read -r domain </etc/cuven-gateway/gateway-name
+        [[ -n "$domain" ]] || fail '已保存的网关名称为空，请显式指定 --domain。'
     fi
+    checker="$installer_dir/../bin/cuven-gateway-$(uname -m)"
+    if [[ -x "$checker" ]]; then
+        check=("$checker")
+    else
+        check=(go -C "$installer_dir/../core" run -mod=readonly ./cmd/cuven-gateway)
+    fi
+    "${check[@]}" -check-tls -tls-cert "$current_cert" -tls-key "$current_key" -tls-name "$domain"
     bash "$installer_dir/install-certbot-hook.sh" "$current_cert" "$current_key"
     if "$upgrade"; then bash "$installer_dir/upgrade-gateway.sh" "$current_cert" "$current_key"; fi
     systemctl enable --now cuven-gateway.service
@@ -75,7 +81,11 @@ if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
     exit 0
 fi
 if [[ -z "$domain" ]]; then domain=$(ask '请输入指向本机的网关域名'); fi
-[[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ && "$domain" == *.* ]] || fail '域名格式无效。'
+if [[ "$domain" == *:* ]]; then
+    [[ "$domain" =~ ^[0-9a-fA-F:.]+$ && -n "$cert" && -n "$key" ]] || fail '使用 IPv6 网关地址时请提供包含该 IP 的证书和私钥。'
+else
+    [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ && "$domain" == *.* ]] || fail '域名格式无效。'
+fi
 port=${port:-4433}
 if [[ -n "$cert" || -n "$key" ]]; then
     [[ -r "$cert" && -r "$key" ]] || fail '--cert 和 --key 需要同时指定可读文件。'

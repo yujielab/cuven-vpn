@@ -47,7 +47,11 @@ if [[ -n "$model" ]]; then
     model_arg="-model-file %d/link-model"
     model_credential="LoadCredential=link-model:$model"
 fi
-[[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || fail 'Enter the certificate domain'
+if [[ "$domain" == *:* ]]; then
+    [[ "$domain" =~ ^[0-9a-fA-F:.]+$ ]] || fail 'Enter the certificate IPv6 address without brackets'
+else
+    [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || fail 'Enter the certificate domain'
+fi
 [[ "$port" =~ ^[0-9]{1,5}$ ]] || fail 'Enter a UDP port from 1 to 65535'
 ((10#$port >= 1 && 10#$port <= 65535)) || fail 'Enter a UDP port from 1 to 65535'
 port=$((10#$port))
@@ -83,11 +87,6 @@ if ! command -v nft >/dev/null || ! command -v ip >/dev/null ||
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nftables iproute2 openssl procps
 fi
 bash "$repo/deploy/check-certificate-dates.sh" "$cert"
-openssl x509 -in "$cert" -noout -checkhost "$domain" |
-    grep -Fxq "Hostname $domain does match certificate" || fail 'TLS certificate name does not match'
-certificate_public_key="$(openssl x509 -in "$cert" -noout -pubkey)"
-tls_public_key="$(openssl pkey -in "$key" -passin pass: -pubout)" || fail 'Use an unencrypted TLS private key'
-[[ "$certificate_public_key" == "$tls_public_key" ]] || fail 'TLS certificate and private key do not match'
 if [[ ! -f "$state/install-version" ]] && nft list table inet cuven_gateway >/dev/null 2>&1; then
     fail 'The nftables table cuven_gateway already exists'
 fi
@@ -117,6 +116,7 @@ if [[ -f "$binary" ]]; then
 else
     (cd "$repo/core" && go build -mod=readonly -trimpath -o "$staging/cuven-gateway" ./cmd/cuven-gateway)
 fi
+"$staging/cuven-gateway" -check-tls -tls-cert "$cert" -tls-key "$key" -tls-name "$domain"
 
 cat >"$staging/firewall.nft" <<EOF
 add table inet cuven_gateway
@@ -243,7 +243,8 @@ if [[ ! -e "$destination/token" ]]; then
     openssl rand -base64 32 | tr '+/' '-_' | tr -d '=' >"$staging/token"
     install -m 0600 "$staging/token" "$updates/token"
 fi
-for file in firewall.nft forwarding.conf cuven-gateway; do
+printf '%s\n' "$domain" >"$staging/gateway-name"
+for file in firewall.nft forwarding.conf gateway-name cuven-gateway; do
     mode=0600
     if [[ "$file" == cuven-gateway ]]; then mode=0700; fi
     install -m "$mode" "$staging/$file" "$updates/$file"
@@ -253,7 +254,7 @@ install -m 0644 "$staging/cuven-gateway.service" "$unit_tmp"
 
 # Finish every copy before replacing any live configuration files.
 if [[ -f "$updates/token" ]]; then mv -fT -- "$updates/token" "$destination/token"; fi
-for file in firewall.nft forwarding.conf cuven-gateway; do
+for file in firewall.nft forwarding.conf gateway-name cuven-gateway; do
     mv -fT -- "$updates/$file" "$destination/$file"
 done
 rmdir -- "$updates"

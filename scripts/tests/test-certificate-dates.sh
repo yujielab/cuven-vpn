@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 src=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+gateway=''
+if (( $# )); then gateway=$(realpath -- "$1"); fi
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 cd "$work"
@@ -44,3 +46,26 @@ for file in expired.pem future.pem; do
         exit 1
     fi
 done
+
+if [[ -n "$gateway" ]]; then
+    # The date fixtures deliberately have only a Common Name.
+    check() { "$gateway" -check-tls -tls-cert "$1" -tls-key "$2" -tls-name "$3"; }
+    reject() { if check "$@"; then echo "Unexpected certificate acceptance: $1" >&2; exit 1; fi; }
+    reject current.pem leaf.key gateway.example
+    openssl req -x509 -key leaf.key -days 1 -subj /CN=unused.example \
+        -addext 'subjectAltName=DNS:*.gateway.example,IP:192.0.2.7,IP:2001:db8::7' \
+        -addext 'extendedKeyUsage=serverAuth' -out server.pem
+    for name in node.gateway.example 192.0.2.7 2001:db8::7; do check server.pem leaf.key "$name"; done
+    reject server.pem leaf.key deep.node.gateway.example
+    reject server.pem leaf.key 192.0.2.8
+    reject server.pem leaf.key 2001:::7
+    reject server.pem ca.key node.gateway.example
+    openssl req -x509 -key leaf.key -days 1 -subj /CN=unused.example \
+        -addext 'subjectAltName=DNS:gateway.example,DNS:192.0.2.7' -out dns.pem
+    check dns.pem leaf.key gateway.example
+    reject dns.pem leaf.key 192.0.2.7
+    openssl req -x509 -key leaf.key -days 1 -subj /CN=unused.example \
+        -addext 'subjectAltName=DNS:gateway.example' -addext 'extendedKeyUsage=clientAuth' -out client.pem
+    reject client.pem leaf.key gateway.example
+    reject client.pem leaf.key ''
+fi
