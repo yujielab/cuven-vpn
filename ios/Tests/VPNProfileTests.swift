@@ -3,6 +3,22 @@ import XCTest
 @testable import Cuven
 
 final class VPNProfileTests: XCTestCase {
+    func testKeychainGroupUsesCurrentSigningPrefixForRepackagedIPA() {
+        let group = "dev.cuven.vpn.shared"
+        let defaultGroup = "ABCDE12345.dev.cuven.vpn"
+        XCTAssertNil(KeychainAccessGroup.resolve(group))
+        XCTAssertEqual(KeychainAccessGroup.resolve(group, defaultGroup: defaultGroup), "ABCDE12345." + group)
+        XCTAssertEqual(
+            KeychainAccessGroup.resolve("$(AppIdentifierPrefix)" + group, defaultGroup: defaultGroup),
+            "ABCDE12345." + group
+        )
+        XCTAssertEqual(KeychainAccessGroup.resolve("ABCDE12345." + group), "ABCDE12345." + group)
+        XCTAssertEqual(
+            KeychainAccessGroup.resolve("ZYXWV98765." + group, defaultGroup: defaultGroup), "ABCDE12345." + group
+        )
+        XCTAssertNil(KeychainAccessGroup.resolve(group, defaultGroup: "dev.cuven.vpn"))
+    }
+
     func testHY2ImportPreservesPercentEncodedCredentialsAndIPv6() throws {
         let result = try VPNProfile.importURI("hy2://alice:pa%40ss%3Aword@[2001:db8::1]:8443/?sni=edge.example.com")
         XCTAssertEqual(result.profile.transport, .hy2)

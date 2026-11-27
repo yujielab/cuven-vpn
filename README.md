@@ -48,6 +48,8 @@ open Cuven.xcodeproj
 
 在 Xcode 为 `Cuven` 和 `CuvenTunnel` 选择同一个开发团队。真机签名需要两套可启用 Packet Tunnel Provider 的 App ID、对应的描述文件和同一个钥匙串访问组。默认标识符为 `dev.cuven.vpn` 和 `dev.cuven.vpn.tunnel`。若更换标识符，同时更新 `project.yml` 和 `ios/Shared/VPNProfile.swift`。选真机运行 `Cuven` scheme，并在首次连接时批准系统 VPN 配置。
 
+如果出现钥匙串错误 `-34018`，请核对签名后的主 App 和 `CuvenTunnel.appex`。两者的 `keychain-access-groups` 都应包含相同的 `<App ID 前缀>.dev.cuven.vpn.shared`，并保留 `packet-tunnel-provider` 权限。重签时应用会根据当前签名解析前缀。更换开发团队后可能需要重新输入连接凭据。 [Apple 钥匙串错误说明](https://developer.apple.com/documentation/security/errsecmissingentitlement)
+
 ## 配置 Hysteria 2
 
 输入服务器地址、端口、认证凭据及可选的 TLS 服务器名称，或在「导入 HY2 链接」中粘贴 `hysteria2://`、`hy2://` 链接。支持 `sni`、`peer`、`obfs=salamander`、`obfs-password` 和 `insecure=0/1`。同时提供 `sni` 与 `peer` 时使用 `sni`。服务端需启用 UDP。Cuven 默认验证 TLS 证书。导入 `insecure=1` 后界面会标示该配置关闭了校验。高安全模式和严格后量子模式要求验证证书，自动回退只选择开启证书校验的 HY2 配置。 [Hysteria 2 URI 规范](https://v2.hysteria.network/docs/developers/URI-Scheme/)
