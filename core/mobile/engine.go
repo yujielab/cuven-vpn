@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/yujielab/cuven-vpn/core/iptunnel"
 	"github.com/yujielab/cuven-vpn/core/packetpolicy"
@@ -77,6 +78,23 @@ func (e *Engine) RequireEncryptedDNS() error {
 	}
 	e.rejectPlainDNS = true
 	return nil
+}
+
+// RTTMilliseconds returns the measured smoothed tunnel RTT, or -1 without a sample.
+func (e *Engine) RTTMilliseconds() int64 {
+	live := e.current()
+	if live == nil {
+		return -1
+	}
+	tunnel, ok := live.tunnel.(*iptunnel.Session)
+	if !ok {
+		return -1
+	}
+	rtt := tunnel.Stats().SmoothedRTT
+	if rtt <= 0 {
+		return -1
+	}
+	return int64(rtt / time.Millisecond)
 }
 
 // StartCuven opens the native authenticated Cuven IP tunnel.

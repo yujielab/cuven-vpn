@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/quic-go/quic-go"
 )
 
 func TestAuthenticatedIPRoundTrip(t *testing.T) {
@@ -45,6 +47,14 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 	}()
 	address := listener.Addr().String()
 	conf := &tls.Config{RootCAs: roots}
+	classical, err := quic.DialAddr(ctx, address, &tls.Config{
+		RootCAs: roots, NextProtos: []string{ALPN},
+		CurvePreferences: []tls.CurveID{tls.X25519},
+	}, quicConfig())
+	if err == nil {
+		_ = classical.CloseWithError(0, "")
+		t.Fatal("accepted a TLS client offering only classical key exchange")
+	}
 	if peer, err := Dial(ctx, address, Token{4}, conf); !errors.Is(err, ErrAuthentication) || peer != nil {
 		t.Fatalf("wrong token: peer %v, error %v", peer, err)
 	}
@@ -56,6 +66,9 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	if client.connection.ConnectionState().TLS.CurveID != tls.X25519MLKEM768 {
+		t.Fatal("Cuven did not negotiate hybrid X25519 + ML-KEM-768")
+	}
 	if !client.IPv6Enabled() {
 		t.Fatal("authenticated gateway IPv6 capability was not negotiated")
 	}

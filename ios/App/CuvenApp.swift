@@ -39,6 +39,11 @@ private struct ConnectionView: View {
                                 .multilineTextAlignment(.center)
                                 .textSelection(.enabled)
                         }
+                        if let rtt = vpn.tunnelRTT {
+                            Text("到网关 \(rtt) ms")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                         if vpn.busy {
                             ProgressView().accessibilityLabel("正在更新 VPN 配置")
                         }
@@ -100,6 +105,13 @@ private struct ConnectionView: View {
             .scrollDismissesKeyboard(.interactively)
             .tint(accent)
             .task { await vpn.load() }
+            .task(id: vpn.status) {
+                guard vpn.status == .connected else { return }
+                while !Task.isCancelled {
+                    vpn.refreshTunnelRTT()
+                    try? await Task.sleep(for: .seconds(5))
+                }
+            }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { vpn.refreshStatus() }
             }

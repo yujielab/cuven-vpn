@@ -17,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/yujielab/cuven-vpn/core/iptunnel"
 	"github.com/yujielab/cuven-vpn/core/linkhealth"
 	"github.com/yujielab/cuven-vpn/core/packetpolicy"
@@ -110,7 +109,7 @@ func openTUN(ctx context.Context, dual bool) (*os.File, error) {
 	return device, nil
 }
 
-func serve(ctx context.Context, listener *quic.Listener, device *os.File, token iptunnel.Token, dual bool, model *linkhealth.Model) error {
+func serve(ctx context.Context, listener *iptunnel.Listener, device *os.File, token iptunnel.Token, dual bool, model *linkhealth.Model) error {
 	var active atomic.Pointer[iptunnel.Session]
 	peer4 := netip.MustParseAddr("10.66.0.2")
 	peer6 := netip.MustParseAddr("fd66::2")
@@ -175,7 +174,7 @@ func serve(ctx context.Context, listener *quic.Listener, device *os.File, token 
 					return
 				}
 				src, dest, valid := iptunnel.PacketAddresses(packet)
-				if valid && isPeer(src) && publicDestination(dest) {
+				if valid && isPeer(src) && publicDestination(dest) && !packetpolicy.RejectPlainDNS(packet) {
 					if _, err := device.Write(packet); err != nil {
 						return
 					}

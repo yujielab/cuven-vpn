@@ -40,6 +40,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
+        state.async {
+            guard messageData == TunnelConfiguration.rttRequest,
+                  let session = self.session, session.ready, let engine = session.engine else {
+                completionHandler?(nil)
+                return
+            }
+            let rtt = engine.rttMilliseconds()
+            completionHandler?(rtt < 0 ? nil : Data(String(rtt).utf8))
+        }
+    }
+
     private func begin(completionHandler: @escaping (Error?) -> Void) throws {
         guard session == nil, let configuration = protocolConfiguration as? NETunnelProviderProtocol,
               let values = configuration.providerConfiguration,

@@ -1,6 +1,6 @@
 # Cuven VPN
 
-Cuven IP 将 iPhone 或 iPad 的原始 IPv4、IPv6 包转发到自有 Linux 网关。传输层使用 QUIC 与 TLS 1.3。Cuven 的应用协议负责接入令牌校验、经认证的地址族协商，以及有界的 IP 分片和重组。QUIC 使用标准认证加密与密钥更新机制。iOS 客户端验证网关证书。设备到网关是隧道的两个加密端点，访问网站的内容仍由 HTTPS 等应用协议保护。 [RFC 9001](https://www.rfc-editor.org/rfc/rfc9001.html) · [RFC 9221](https://www.rfc-editor.org/rfc/rfc9221.html)
+Cuven IP 将 iPhone 或 iPad 的原始 IPv4、IPv6 包转发到自有 Linux 网关。QUIC 与 TLS 1.3 强制协商混合后量子密钥交换 X25519 + ML-KEM-768。客户端验证网关的标准 TLS 证书。Cuven 的应用协议负责接入令牌校验、经认证的地址族协商，以及有界的 IP 分片和重组。设备到网关是隧道的两个加密端点，访问网站的内容仍由 HTTPS 等应用协议保护。 [RFC 9001](https://www.rfc-editor.org/rfc/rfc9001.html) · [RFC 9221](https://www.rfc-editor.org/rfc/rfc9221.html)
 
 旧版 HY2 和 WireGuard 配置需要换为 Cuven IP 网关和接入令牌。更新后的 App 不再提供旧协议的连接入口。
 
@@ -21,6 +21,8 @@ sudo ./deploy/install-gateway.sh \
 
 网关进行源地址检查，并使用独立的 nftables 表限制转发。网关阻止客户端访问主机服务、内网与链路本地地址。更新或续签证书后重启服务，已有接入令牌会保留。主机全局防火墙在重载时清空规则表的部署，需要重启网关服务恢复专用规则。
 
+QUIC Retry 在握手前验证源地址，接入令牌的证明绑定到当前 TLS 会话。网关对未建立的 UDP 连接限速。已知客户端网络出口时，可以重复指定 `--allow-source CIDR`，只对这些来源开放网关 UDP 端口。启用后如需从 IPv4 和 IPv6 接入，应分别填写允许的网段。 [RFC 9000 地址验证](https://www.rfc-editor.org/rfc/rfc9000.html#section-8)
+
 ```sh
 sudo systemctl status cuven-gateway
 sudo journalctl -u cuven-gateway -n 50
@@ -32,11 +34,22 @@ Cuven IP 在 iOS 中安装 IPv4、IPv6 默认路由，使用全流量策略。IP
 
 隧道默认使用 DoH。可以在「连接设置」配置自有 DoH 或 DoT 和解析器的公网 IP。Packet Tunnel 拦截隧道里的明文 DNS 和 LLMNR。应用的 TLS、HTTP 和 WebRTC 流量按 IP 包原样通过，网关只执行转发与地址转换。
 
-验收时，在已连接的设备上分别访问自有的仅 IPv4 和仅 IPv6 HTTPS 测试站，核对服务端记录的连接源 IP。双栈应看到 VPS 的 IPv4 与 IPv6 出口。单栈配置下，仅 IPv6 的测试站应无法建立连接。用自有递归解析器同时核对 DNS 请求来源。时区、语言、设备信息和登录状态仍由实际客户端提供。
+验收时，在已连接的设备上分别访问自有的仅 IPv4 和仅 IPv6 HTTPS 测试站。双栈应看到 VPS 的 IPv4 与 IPv6 出口。单栈配置下，仅 IPv6 的测试站应无法建立连接。网关也会过滤明文 DNS。用自有递归解析器同时核对 DNS 请求来源。时区、语言、设备信息和登录状态仍由实际客户端提供。
+
+在独立于 VPN 出口的自有测试服务器上，可运行以下工具核对出口。为 IPv6 重复启动一次，使用只有 AAAA 记录的测试域名和 IPv6 监听地址。把程序输出的地址在已连接的 iPhone 上打开。结果来自 HTTPS 套接字实际对端。测试工具不记录访问日志。
+
+```sh
+python3 deploy/check-egress.py --listen 0.0.0.0 \
+  --url https://verify4.example.com:9443 \
+  --cert /path/to/fullchain.pem --key /path/to/privkey.pem \
+  --expect-ip 203.0.113.10
+```
 
 ## 链路测量和模型
 
 网关可加载基于链路统计量的模型。它使用实际测量的 QUIC RTT、RTT 变化和丢包率。持续异常时，服务日志输出链路级评分。认证、加密和转发规则独立生效。
+
+客户端首页显示手机到 VPS 的实测 RTT。VPS 到自有测量站的 RTT 可在 VPS 上单独测量。手机发起的端到端请求耗时包含手机到 VPS 的链路。
 
 用合成样本验证训练到部署的流程：
 

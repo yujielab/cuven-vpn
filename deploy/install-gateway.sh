@@ -4,7 +4,7 @@ umask 077
 
 usage() {
     cat <<'EOF'
-Usage: sudo deploy/install-gateway.sh --domain HOST --cert PATH --key PATH [--port N] [--ipv6] [--model PATH]
+Usage: sudo deploy/install-gateway.sh --domain HOST --cert PATH --key PATH [--port N] [--ipv6] [--model PATH] [--allow-source CIDR]
 Run on a Debian or Ubuntu VPS with systemd. Put a trusted TLS certificate and
 its private key on the VPS before running the installer.
 EOF
@@ -13,11 +13,12 @@ EOF
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 domain='' cert='' key='' model='' port=4433 dual=false
+allow4=() allow6=()
 while (($#)); do
     case "$1" in
         --help) usage; exit 0 ;;
         --ipv6) dual=true; shift ;;
-        --domain|--cert|--key|--port|--model)
+        --domain|--cert|--key|--port|--model|--allow-source)
             (($# >= 2)) || fail "$1 requires a value"
             case "$1" in
                 --domain) domain="$2" ;;
@@ -25,6 +26,15 @@ while (($#)); do
                 --key) key="$2" ;;
                 --model) model="$2" ;;
                 --port) port="$2" ;;
+                --allow-source)
+                    if [[ "$2" == *:* && "$2" =~ ^[0-9a-fA-F:.]+/[0-9]{1,3}$ ]]; then
+                        allow6+=("$2")
+                    elif [[ "$2" =~ ^[0-9.]+/[0-9]{1,2}$ ]]; then
+                        allow4+=("$2")
+                    else
+                        fail 'Use an IPv4 or IPv6 CIDR for --allow-source'
+                    fi
+                    ;;
             esac
             shift 2 ;;
         *) fail "Unknown option: $1" ;;
@@ -111,6 +121,22 @@ table inet cuven_gateway {
     chain input {
         type filter hook input priority -20; policy accept;
         iifname "cuven0" drop
+EOF
+if ((${#allow4[@]} + ${#allow6[@]})); then
+    if ((${#allow4[@]})); then
+        allow4_list="$(IFS=,; printf '%s' "${allow4[*]}")"
+        printf '        udp dport %s ip saddr != { %s } drop\n' "$port" "$allow4_list" >>"$staging/firewall.nft"
+    else
+        printf '        udp dport %s meta nfproto ipv4 drop\n' "$port" >>"$staging/firewall.nft"
+    fi
+    if ((${#allow6[@]})); then
+        allow6_list="$(IFS=,; printf '%s' "${allow6[*]}")"
+        printf '        udp dport %s ip6 saddr != { %s } drop\n' "$port" "$allow6_list" >>"$staging/firewall.nft"
+    else
+        printf '        udp dport %s meta nfproto ipv6 drop\n' "$port" >>"$staging/firewall.nft"
+    fi
+fi
+cat >>"$staging/firewall.nft" <<EOF
         udp dport $port ct state new limit rate over 200/second burst 400 packets drop
     }
     chain forward {

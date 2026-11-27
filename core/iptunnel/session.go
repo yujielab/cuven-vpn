@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -76,6 +78,8 @@ func Dial(ctx context.Context, address string, token Token, tlsConfig *tls.Confi
 	config.NextProtos = []string{ALPN}
 	config.MinVersion = tls.VersionTLS13
 	config.MaxVersion = tls.VersionTLS13
+	config.CurvePreferences = []tls.CurveID{tls.X25519MLKEM768}
+	config.SessionTicketsDisabled = true
 	transport := quicConfig()
 	transport.MaxIncomingStreams = -1
 	startup, cancel := context.WithTimeout(ctx, authTimeout)
@@ -92,7 +96,15 @@ func Dial(ctx context.Context, address string, token Token, tlsConfig *tls.Confi
 	return newSession(connection, dual), nil
 }
 
-func Listen(address string, tlsConfig *tls.Config) (*quic.Listener, error) {
+// Listener owns the UDP socket and QUIC listener for one gateway.
+type Listener struct {
+	*quic.Listener
+	closeAll func() error
+}
+
+func (l *Listener) Close() error { return l.closeAll() }
+
+func Listen(address string, tlsConfig *tls.Config) (*Listener, error) {
 	if tlsConfig == nil {
 		return nil, errors.New("Cuven gateway requires a TLS certificate")
 	}
@@ -100,7 +112,30 @@ func Listen(address string, tlsConfig *tls.Config) (*quic.Listener, error) {
 	config.NextProtos = []string{ALPN}
 	config.MinVersion = tls.VersionTLS13
 	config.MaxVersion = tls.VersionTLS13
-	return quic.ListenAddr(address, config, quicConfig())
+	config.CurvePreferences = []tls.CurveID{tls.X25519MLKEM768}
+	config.SessionTicketsDisabled = true
+	addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return nil, err
+	}
+	socket, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	transport := &quic.Transport{
+		Conn:                socket,
+		VerifySourceAddress: func(net.Addr) bool { return true },
+	}
+	listener, err := transport.Listen(config, quicConfig())
+	if err != nil {
+		_ = transport.Close()
+		_ = socket.Close()
+		return nil, err
+	}
+	closeAll := sync.OnceValue(func() error {
+		return errors.Join(listener.Close(), transport.Close(), socket.Close())
+	})
+	return &Listener{Listener: listener, closeAll: closeAll}, nil
 }
 
 // Authenticate accepts a single token proof on an established QUIC connection.
@@ -116,7 +151,8 @@ func Authenticate(ctx context.Context, connection *quic.Conn, token Token, dual 
 func tokenProof(connection *quic.Conn, token Token) ([]byte, error) {
 	state := connection.ConnectionState()
 	if token == (Token{}) || state.Used0RTT || !state.SupportsDatagrams.Remote ||
-		state.TLS.NegotiatedProtocol != ALPN || !state.TLS.HandshakeComplete {
+		state.TLS.NegotiatedProtocol != ALPN || !state.TLS.HandshakeComplete ||
+		state.TLS.CurveID != tls.X25519MLKEM768 {
 		return nil, ErrAuthentication
 	}
 	binding, err := state.TLS.ExportKeyingMaterial("EXPORTER-Cuven-IP-v1", nil, tokenSize)
