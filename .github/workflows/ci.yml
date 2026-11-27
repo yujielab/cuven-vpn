@@ -85,10 +85,14 @@ jobs:
           echo "Selected $SIMULATOR_MODEL ($device_id)"
           xcrun simctl bootstatus "$device_id" -b
           echo "SIMULATOR_ID=$device_id" >> "$GITHUB_ENV"
-      - name: Install and launch Cuven independently of XCTest
-        timeout-minutes: 3
+      - name: Install Cuven on the booted simulator
+        timeout-minutes: 5
         run: |
           xcrun simctl install "$SIMULATOR_ID" DerivedData/Build/Products/Debug-iphonesimulator/Cuven.app
+          xcrun simctl get_app_container "$SIMULATOR_ID" dev.cuven.vpn app
+      - name: Launch Cuven independently of XCTest
+        timeout-minutes: 3
+        run: |
           xcrun simctl launch "$SIMULATOR_ID" dev.cuven.vpn
           xcrun simctl terminate "$SIMULATOR_ID" dev.cuven.vpn
       - name: Run unit and layout tests on the booted device
