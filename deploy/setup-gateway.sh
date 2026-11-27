@@ -10,7 +10,7 @@ ask() {
     printf '%s' "$answer"
 }
 domain='' port='' family=auto cert='' key='' email=''
-accept_terms=false reconfigure=false
+accept_terms=false reconfigure=false upgrade=false
 while (($#)); do
     case "$1" in
         --domain|--port|--cert|--key|--email)
@@ -23,14 +23,16 @@ while (($#)); do
                 --email) email=$2 ;;
             esac
             shift 2 ;;
-        --help) printf '%s\n' 'setup-gateway.sh [--domain HOST] [--accept-terms] [--email EMAIL] [--port PORT] [--cert PATH --key PATH] [--ipv6|--ipv4-only] [--reconfigure]'; exit 0 ;;
+        --help) printf '%s\n' 'setup-gateway.sh [--domain HOST] [--accept-terms] [--email EMAIL] [--port PORT] [--cert PATH --key PATH] [--ipv6|--ipv4-only] [--reconfigure|--upgrade]'; exit 0 ;;
         --accept-terms) accept_terms=true; shift ;;
         --ipv6) family=6; shift ;;
         --ipv4-only) family=4; shift ;;
+        --upgrade) upgrade=true; shift ;;
         --reconfigure) reconfigure=true; shift ;;
         *) fail "未知选项 $1，请查看 --help。" ;;
     esac
 done
+if "$upgrade" && "$reconfigure"; then fail '--upgrade 和 --reconfigure 不能同时使用。'; fi
 if [[ -n "$port" ]]; then
     [[ "$port" =~ ^[0-9]{1,5}$ ]] || fail '端口必须是数字。'
     port=$((10#$port))
@@ -66,6 +68,7 @@ if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
         fi
     fi
     bash "$installer_dir/install-certbot-hook.sh" "$current_cert" "$current_key"
+    if "$upgrade"; then bash "$installer_dir/upgrade-gateway.sh" "$current_cert" "$current_key"; fi
     systemctl enable --now cuven-gateway.service
     systemctl is-active cuven-gateway.service
     printf '%s\n' '已有配置已启用，接入令牌保存在 /etc/cuven-gateway/token。'

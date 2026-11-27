@@ -7,7 +7,7 @@ stage=$(mktemp -d)
 bundle=$(mktemp -- "${output}.XXXXXX")
 trap 'rm -rf -- "$stage"; rm -f -- "$bundle"' EXIT
 mkdir -p "$stage/bin" "$stage/deploy"
-cp "$repo/deploy/"{setup-gateway,install-gateway,install-certbot-hook,check-certificate-dates}.sh "$stage/deploy/"
+cp "$repo/deploy/"{setup-gateway,install-gateway,upgrade-gateway,install-certbot-hook,check-certificate-dates}.sh "$stage/deploy/"
 for arch in amd64 arm64; do
     case "$arch" in amd64) machine=x86_64 ;; arm64) machine=aarch64 ;; esac
     (cd "$repo/core" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build \
@@ -27,7 +27,7 @@ Debian / Ubuntu，x86_64 和 aarch64。默认 UDP 4433，自动检测 IPv6。
 --accept-terms 同意 Let's Encrypt 服务条款并授权签发证书（https://letsencrypt.org/repository/）。
 --email EMAIL 可选 ACME 联系邮箱。--cert PATH --key PATH 使用已有证书。
 --port PORT、--ipv6 或 --ipv4-only 可覆盖网络默认值。
-已有安装默认沿用当前配置并启动。--reconfigure 按所给参数重建服务及防火墙，替换原有来源限制和模型设置。
+已有安装默认沿用当前配置并启动。--upgrade 更新网关程序，保留端口、令牌、防火墙和服务选项。--reconfigure 按所给参数重建服务及防火墙，替换原有来源限制和模型设置。
 HELP
     exit 0
 fi

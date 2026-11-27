@@ -4,6 +4,7 @@
 set -euo pipefail
 umask 077
 binary=$(realpath "${1:?Specify the compiled Linux gateway}")
+probe=$(realpath "${2:?Specify the compiled client probe}")
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 [[ $EUID == 0 && -x "$binary" && -d /run/systemd/system && -c /dev/net/tun ]]
 for tool in ip nft sysctl openssl unshare systemctl systemd-analyze; do command -v "$tool" >/dev/null; done
@@ -46,6 +47,10 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 # Stage the exact installer output without registering the production unit.
 cat >"$work/shim/systemctl" <<'SHIM'
 #!/bin/sh
+if [ "$1" = restart ] && [ -e "$CUVEN_TEST_RESTART_FAULT" ]; then
+    rm -- "$CUVEN_TEST_RESTART_FAULT"
+    exit 75
+fi
 case "$1" in daemon-reload|enable|restart|is-active) exit 0 ;; *) exit 2 ;; esac
 SHIM
 cat >"$work/shim/install" <<'SHIM'
@@ -61,7 +66,7 @@ in_network unshare --mount --propagation private -- bash -eu -c '
     work=$1
     mount --bind "$work/etc" /etc
     mount --bind "$work/locks" /run/lock
-    export PATH="$work/shim:$PATH" CUVEN_TEST_FAULT="$work/fail-once"
+    export PATH="$work/shim:$PATH" CUVEN_TEST_FAULT="$work/fail-once" CUVEN_TEST_RESTART_FAULT="$work/fail-restart"
     args=(--domain gateway.example --port 4433 --cert "$work/qa.crt" --key "$work/qa.key" --ipv4-only)
     setup(){ bash "$work/pkg/deploy/setup-gateway.sh" "${args[@]}" "$@"; }
     touch "$CUVEN_TEST_FAULT"
@@ -71,6 +76,15 @@ in_network unshare --mount --propagation private -- bash -eu -c '
     token_before=$(sha256sum /etc/cuven-gateway/token)
     setup
     if setup --port 4513; then exit 1; fi
+    # Model an older installed ELF while retaining the packaged release bytes.
+    printf test >>/etc/cuven-gateway/cuven-gateway
+    old_program=$(sha256sum /etc/cuven-gateway/cuven-gateway)
+    touch "$CUVEN_TEST_RESTART_FAULT"
+    if setup --upgrade; then exit 1; fi
+    [[ "$old_program" == "$(sha256sum /etc/cuven-gateway/cuven-gateway)" ]]
+    setup --upgrade
+    cmp "$work/pkg/bin/cuven-gateway-$(uname -m)" /etc/cuven-gateway/cuven-gateway
+    [[ ! -e /etc/cuven-gateway/.upgrade-previous ]]
     [[ "$token_before" == "$(sha256sum /etc/cuven-gateway/token)" ]]
 ' bash "$work"
 
@@ -96,6 +110,12 @@ check_service() {
 }
 systemctl start "$unit"
 check_service
+in_network env SSL_CERT_FILE="$work/qa.crt" "$probe" "$work/etc/cuven-gateway/token"
+for _ in {1..100}; do
+    if [[ $(in_network ip -o link show cuven0) == *" mtu 1500 "* ]]; then break; fi
+    sleep .02
+done
+[[ $(in_network ip -o link show cuven0) == *" mtu 1500 "* ]]
 first_pid=$(systemctl show "$unit" -p MainPID --value)
 token_before=$(sha256sum "$work/etc/cuven-gateway/token")
 systemctl restart "$unit"

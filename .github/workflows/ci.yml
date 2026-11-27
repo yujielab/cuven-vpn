@@ -42,7 +42,8 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends nftables
           fi
-          sudo bash ../scripts/tests/test-gateway-systemd.sh ./cuven-gateway
+          go build -o "$RUNNER_TEMP/cuven-test-client" ../scripts/tests/gateway-client.go
+          sudo bash ../scripts/tests/test-gateway-systemd.sh ./cuven-gateway "$RUNNER_TEMP/cuven-test-client"
       - name: Check gateway certificate validity windows
         run: bash ../scripts/tests/test-certificate-dates.sh
       - name: Test the Certbot renewal hook in a temporary filesystem
