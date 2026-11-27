@@ -106,4 +106,38 @@ jobs:
         run: |
           xcodebuild -project Cuven.xcodeproj -scheme Cuven -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath DerivedData \
+            -resultBundlePath "$RUNNER_TEMP/CuvenSimulator.xcresult" \
             -parallel-testing-enabled NO -quiet test-without-building
+      - name: Read unit and rotation test results
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+
+          bundle = os.path.join(os.environ["RUNNER_TEMP"], "CuvenSimulator.xcresult")
+          def read_results(kind):
+              return json.loads(subprocess.check_output(
+                  ["xcrun", "xcresulttool", "get", "test-results", kind, "--path", bundle]
+              ))
+
+          summary = read_results("summary")
+          if not summary.get("passedTests") or summary.get("failedTests") != 0:
+              raise SystemExit("Expected completed, passing simulator tests")
+          nodes = list(read_results("tests")["testNodes"])
+          expected = {
+              "ConnectionLayoutTests/testConnectionSettingsStayReachableAfterRotation()",
+              "VPNProfileTests/testIPv4OnlyCuvenDropsCapturedIPv6BeforeForwarding()",
+          }
+          while nodes:
+              node = nodes.pop()
+              nodes.extend(node.get("children", []))
+              if node.get("result") == "Passed":
+                  expected.discard(node.get("nodeIdentifier"))
+          if expected:
+              raise SystemExit(f"Missing passing simulator tests: {sorted(expected)}")
+          line = f"{summary['passedTests']} tests passed, including rotation and IPv4-only tunnel coverage."
+          print(line)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
+              print(line, file=output)
+          PYTHON
