@@ -83,6 +83,11 @@ private struct ConnectionView: View {
                     SecureField(vpn.hasCredential ? "令牌已保存，输入以替换" : "网关接入令牌", text: $vpn.credential)
                         .cuvenSecureInput()
                         .accessibilityLabel("Cuven IP 接入令牌")
+                    if vpn.requiresAppStart {
+                        Text("签名未授权共享钥匙串。令牌已存入 App 钥匙串，请从 Cuven 内手动连接。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     Toggle("网关支持 IPv6", isOn: $vpn.enableIPv6)
                 }
                 .disabled(!vpn.canEdit)

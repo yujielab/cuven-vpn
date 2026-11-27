@@ -1,5 +1,6 @@
 import Foundation
 import NetworkExtension
+import Security
 import SwiftUI
 
 @MainActor
@@ -18,6 +19,7 @@ final class VPNController: ObservableObject {
     @Published var encryptedDNSTLSName = ""
     @Published var encryptedDNSBootstrap = ""
     @Published private(set) var autoConnectPaused = false
+    @Published private(set) var requiresAppStart = false
     @Published private(set) var hasCredential = false
     @Published private(set) var status = NEVPNStatus.invalid
     @Published private(set) var tunnelRTT: Int64?
@@ -57,10 +59,11 @@ final class VPNController: ObservableObject {
         busy = true
         defer { busy = false }
         do {
+            let providerID = try Self.embeddedProviderID()
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
             let existing = managers.first {
                 ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier
-                    == TunnelConfiguration.providerBundleIdentifier
+                    == providerID
             }
             manager = existing ?? NETunnelProviderManager()
             if let configuration = existing?.protocolConfiguration as? NETunnelProviderProtocol,
@@ -68,6 +71,7 @@ final class VPNController: ObservableObject {
                let profile = try? VPNProfile.decode(data) {
                 savedProfile = profile
                 if profile.transport == .cuven {
+                    requiresAppStart = configuration.providerConfiguration?[AppCredentialHandoff.modeKey] as? Bool == true
                     credentialReference = Self.credentialReference(in: configuration)
                     apply(profile)
                     refreshCredential()
@@ -129,7 +133,19 @@ final class VPNController: ObservableObject {
             }
             refreshStatus()
             if connect && (status == .invalid || status == .disconnected) {
-                try manager.connection.startVPNTunnel()
+                if requiresAppStart {
+                    guard let configuration = manager.protocolConfiguration as? NETunnelProviderProtocol,
+                          configuration.providerBundleIdentifier == (try Self.embeddedProviderID()),
+                          configuration.providerConfiguration?[AppCredentialHandoff.modeKey] as? Bool == true,
+                          profile.autoConnect == .off, !manager.isOnDemandEnabled,
+                          let reference = credentialReference, reference == Self.credentialReference(in: configuration)
+                    else { throw CredentialError.missing }
+                    let token = try KeychainCredential.load(reference: reference)
+                    let options = try AppCredentialHandoff.options(token: token, reference: reference)
+                    try manager.connection.startVPNTunnel(options: options)
+                } else {
+                    try manager.connection.startVPNTunnel()
+                }
                 connectionRequested = true
                 let observed = manager.connection.status
                 if observed == .invalid || observed == .disconnected {
@@ -166,14 +182,30 @@ final class VPNController: ObservableObject {
     }
 
     private func persist(_ profile: VPNProfile, manager: NETunnelProviderManager) async throws {
+        let providerID = try Self.embeddedProviderID()
         let profileData = try JSONEncoder().encode(profile)
         let previous = manager.protocolConfiguration as? NETunnelProviderProtocol
         let previousReference = credentialReference
         let reference: Data
-        if hasNewCredential {
-            let token = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        var appStart = requiresAppStart
+        if hasNewCredential || (appStart && profile.autoConnect != .off) {
+            let token: String
+            if hasNewCredential {
+                token = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if let previousReference {
+                token = try KeychainCredential.load(reference: previousReference)
+            } else {
+                throw CredentialError.missing
+            }
             try VPNProfile.validateAccessToken(token)
-            reference = try KeychainCredential.store(token)
+            do {
+                reference = try KeychainCredential.store(token)
+                appStart = false
+            } catch CredentialError.keychain(errSecMissingEntitlement) {
+                guard profile.autoConnect == .off else { throw CredentialError.sharedRequired }
+                reference = try KeychainCredential.storeForApp(token)
+                appStart = true
+            }
         } else if hasCredential, let previousReference {
             let token = try KeychainCredential.load(reference: previousReference)
             try VPNProfile.validateAccessToken(token)
@@ -183,12 +215,13 @@ final class VPNController: ObservableObject {
         }
 
         let configuration = NETunnelProviderProtocol()
-        configuration.providerBundleIdentifier = TunnelConfiguration.providerBundleIdentifier
+        configuration.providerBundleIdentifier = providerID
         configuration.serverAddress = profile.endpoint
-        configuration.passwordReference = reference
+        configuration.passwordReference = appStart ? nil : reference
         configuration.providerConfiguration = [
             TunnelConfiguration.profileKey: profileData,
-            TunnelConfiguration.credentialKey: reference
+            TunnelConfiguration.credentialKey: reference,
+            AppCredentialHandoff.modeKey: appStart
         ]
         configuration.includeAllNetworks = profile.usesFullRouting
         configuration.enforceRoutes = profile.blockLAN && !configuration.includeAllNetworks
@@ -223,6 +256,7 @@ final class VPNController: ObservableObject {
         }
         credential = ""
         credentialReference = reference
+        requiresAppStart = appStart
         savedProfile = profile
         autoConnectPaused = false
         apply(profile)
@@ -242,6 +276,16 @@ final class VPNController: ObservableObject {
         let disconnect = NEOnDemandRuleDisconnect()
         disconnect.interfaceTypeMatch = .any
         return [connect, disconnect]
+    }
+
+    private static func embeddedProviderID() throws -> String {
+        guard let plugins = Bundle.main.builtInPlugInsURL, let appID = Bundle.main.bundleIdentifier,
+              let provider = Bundle(url: plugins.appendingPathComponent("CuvenTunnel.appex")),
+              let identifier = provider.bundleIdentifier, identifier.hasPrefix(appID + "."),
+              let settings = provider.object(forInfoDictionaryKey: "NSExtension") as? [String: Any],
+              settings["NSExtensionPointIdentifier"] as? String == "com.apple.networkextension.packet-tunnel"
+        else { throw CredentialError.providerMissing }
+        return identifier
     }
 
     private static func credentialReference(in configuration: NETunnelProviderProtocol) -> Data? {

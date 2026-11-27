@@ -15,7 +15,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     ) {
         state.async {
             do {
-                try self.begin(completionHandler: completionHandler)
+                try self.begin(options: options, completionHandler: completionHandler)
             } catch {
                 completionHandler(error)
             }
@@ -52,7 +52,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func begin(completionHandler: @escaping (Error?) -> Void) throws {
+    private func begin(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) throws {
         guard session == nil, let configuration = protocolConfiguration as? NETunnelProviderProtocol,
               let values = configuration.providerConfiguration,
               let profileData = values[TunnelConfiguration.profileKey] as? Data,
@@ -72,7 +72,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 throw TunnelFailure.strictRouting
             }
         }
-        let connection = try ConnectionProfile(profile: profile, reference: credential)
+        let token: String
+        if values[AppCredentialHandoff.modeKey] as? Bool == true {
+            token = try AppCredentialHandoff.token(options: options, reference: credential, autoConnect: profile.autoConnect)
+        } else {
+            token = try KeychainCredential.load(reference: credential)
+        }
+        let connection = try ConnectionProfile(profile: profile, token: token)
         let session = Session(connection: connection, completion: completionHandler)
         self.session = session
         resolve(session)
@@ -363,8 +369,7 @@ private struct ConnectionProfile {
     let token: String
     let plan: TunnelNetworkPlan
 
-    init(profile: VPNProfile, reference: Data) throws {
-        let token = try KeychainCredential.load(reference: reference)
+    init(profile: VPNProfile, token: String) throws {
         try VPNProfile.validateAccessToken(token)
         self.profile = profile
         self.token = token

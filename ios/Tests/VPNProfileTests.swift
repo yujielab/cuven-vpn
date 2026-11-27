@@ -19,6 +19,19 @@ final class VPNProfileTests: XCTestCase {
         XCTAssertNil(KeychainAccessGroup.resolve(group, defaultGroup: "dev.cuven.vpn"))
     }
 
+    func testManualAppStartRequiresMatchingReferenceAndValidToken() throws {
+        let reference = Data([1, 2, 3])
+        let token = String(Data(repeating: 1, count: 32).base64EncodedString().dropLast())
+        let options = try AppCredentialHandoff.options(token: token, reference: reference)
+        XCTAssertEqual(try AppCredentialHandoff.token(options: options, reference: reference, autoConnect: .off), token)
+        XCTAssertThrowsError(try AppCredentialHandoff.token(options: nil, reference: reference, autoConnect: .off))
+        XCTAssertThrowsError(try AppCredentialHandoff.token(options: options, reference: Data([4]), autoConnect: .off))
+        for mode in AutoConnect.allCases where mode != .off {
+            XCTAssertThrowsError(try AppCredentialHandoff.token(options: options, reference: reference, autoConnect: mode))
+        }
+        XCTAssertThrowsError(try AppCredentialHandoff.options(token: "invalid", reference: reference))
+    }
+
     func testCuvenProfileAndToken() throws {
         let token = String(Data(repeating: 255, count: 32).base64EncodedString().dropLast())
             .replacingOccurrences(of: "/", with: "_")

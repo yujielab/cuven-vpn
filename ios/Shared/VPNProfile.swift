@@ -6,7 +6,6 @@ import Glibc
 #endif
 
 enum TunnelConfiguration {
-    static let providerBundleIdentifier = "dev.cuven.vpn.tunnel"
     static let profileKey = "Profile"
     static let credentialKey = "Credential"
     static let automaticFallbackKey = "AutomaticFallback"
