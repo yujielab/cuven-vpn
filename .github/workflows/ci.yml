@@ -144,6 +144,8 @@ jobs:
           keychain_test = "SimulatorKeychainTests/testAppCredentialFollowsSystemKeychainGrant()"
           expected = {
               keychain_test,
+              "SimulatorKeychainTests/testSavedReferenceReadsAndRemovesOnlyTheSelectedCredential()",
+              "SimulatorKeychainTests/testNonCredentialReferencesLeaveTheOriginalItemsIntact()",
               "ConnectionLayoutTests/testConnectionSettingsStayReachableAfterRotation()",
               "VPNProfileTests/testIPv4OnlyCuvenDropsCapturedIPv6BeforeForwarding()",
           }

@@ -55,7 +55,7 @@ enum KeychainCredential {
     }
 
     static func load(reference: Data) throws -> String {
-        var query = query(for: reference)
+        var query = try credentialQuery(for: reference)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
@@ -69,11 +69,28 @@ enum KeychainCredential {
     }
 
     static func remove(reference: Data) {
-        SecItemDelete(query(for: reference) as CFDictionary)
+        guard let query = try? credentialQuery(for: reference) else { return }
+        SecItemDelete(query as CFDictionary)
     }
 
-    private static func query(for reference: Data) -> [String: Any] {
-        [kSecValuePersistentRef as String: reference]
+    private static func credentialQuery(for reference: Data) throws -> [String: Any] {
+        // Saved VPN preferences can outlive the item that Cuven originally wrote.
+        // Check the credential namespace before requesting a value or deleting it.
+        guard !reference.isEmpty else { throw CredentialError.missing }
+        var query: [String: Any] = [kSecValuePersistentRef as String: reference]
+        var lookup = query
+        lookup[kSecReturnAttributes as String] = true
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(lookup as CFDictionary, &result)
+        guard status == errSecSuccess else { throw CredentialError.keychain(status) }
+        guard let attributes = result as? [String: Any],
+              attributes[kSecAttrService as String] as? String == service,
+              let account = attributes[kSecAttrAccount as String] as? String,
+              UUID(uuidString: account) != nil else { throw CredentialError.missing }
+        query[kSecClass as String] = kSecClassGenericPassword
+        query[kSecAttrService as String] = service
+        query[kSecAttrAccount as String] = account
+        return query
     }
 
     private static func accessGroupForCurrentSignature(_ configured: String) throws -> String {

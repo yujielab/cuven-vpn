@@ -5,6 +5,56 @@ import XCTest
 @testable import Cuven
 
 final class SimulatorKeychainTests: XCTestCase {
+    func testSavedReferenceReadsAndRemovesOnlyTheSelectedCredential() throws {
+        let service = "dev.cuven.vpn.credential"
+        try withItem(service: service, account: UUID().uuidString) { selected in
+            try withItem(service: service, account: UUID().uuidString) { retained in
+                XCTAssertEqual(try KeychainCredential.load(reference: selected), "fixture")
+                KeychainCredential.remove(reference: selected)
+                XCTAssertEqual(itemStatus(selected), errSecItemNotFound)
+                XCTAssertEqual(try KeychainCredential.load(reference: retained), "fixture")
+            }
+        }
+    }
+
+    func testNonCredentialReferencesLeaveTheOriginalItemsIntact() throws {
+        let service = "dev.cuven.vpn.credential"
+        for (name, account) in [(service + ".signing", UUID().uuidString),
+                                (service, "probe-" + UUID().uuidString)] {
+            try withItem(service: name, account: account) { reference in
+                XCTAssertThrowsError(try KeychainCredential.load(reference: reference)) { error in
+                    guard case CredentialError.missing = error else {
+                        return XCTFail("Expected a missing credential")
+                    }
+                }
+                KeychainCredential.remove(reference: reference)
+                XCTAssertEqual(itemStatus(reference), errSecSuccess)
+            }
+        }
+    }
+
+    private func withItem(service: String, account: String, _ body: (Data) throws -> Void) throws {
+        let identity: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                      kSecAttrService as String: service, kSecAttrAccount as String: account]
+        var item = identity
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        item[kSecValueData as String] = Data("fixture".utf8)
+        item[kSecReturnPersistentRef as String] = true
+        var result: CFTypeRef?
+        let status = SecItemAdd(item as CFDictionary, &result)
+        if status == errSecMissingEntitlement { throw XCTSkip("Simulator denied the keychain fixture") }
+        guard status == errSecSuccess else { return XCTFail("Keychain fixture creation failed (\(status))") }
+        defer { SecItemDelete(identity as CFDictionary) }
+        try body(XCTUnwrap(result as? Data))
+    }
+
+    private func itemStatus(_ reference: Data) -> OSStatus {
+        let query: [String: Any] = [kSecValuePersistentRef as String: reference,
+                                    kSecReturnAttributes as String: true]
+        var result: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &result)
+    }
+
     func testAppCredentialFollowsSystemKeychainGrant() throws {
         let identity: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
