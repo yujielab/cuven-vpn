@@ -32,7 +32,11 @@ jobs:
       - run: go build ./cmd/cuven-gateway
 
   ios:
-    name: iOS 27.2 build and tests
+    name: iOS 27.2 tests on ${{ matrix.device }}
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [iPhone Duo, iPhone 17]
     runs-on: xcode-27
     timeout-minutes: 35
     env:
@@ -60,16 +64,47 @@ jobs:
           ./scripts/build-core.sh
           xcodegen generate
       - name: Build iOS app and embedded packet tunnel
+        if: matrix.device == 'iPhone Duo'
         run: |
           xcodebuild -project Cuven.xcodeproj -scheme Cuven -configuration Release \
             -destination 'generic/platform=iOS' -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO -quiet build
           test -d DerivedData/Build/Products/Release-iphoneos/Cuven.app/PlugIns/CuvenTunnel.appex
           plutil -lint DerivedData/Build/Products/Release-iphoneos/Cuven.app/PrivacyInfo.xcprivacy
-      - name: Run iPhone Duo and iPhone 17 simulator tests
+      - name: Build the simulator app and tests
         run: |
           xcodebuild -project Cuven.xcodeproj -scheme Cuven -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone Duo,OS=27.2' \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=27.2' \
-            -derivedDataPath DerivedData -maximum-concurrent-test-simulator-destinations 1 \
-            CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO -quiet test
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath DerivedData \
+            CODE_SIGN_IDENTITY=- -quiet build-for-testing
+      - name: Boot the selected iOS 27.2 simulator
+        timeout-minutes: 6
+        env:
+          SIMULATOR_MODEL: ${{ matrix.device }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+
+          devices = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
+          runtime = devices["devices"].get("com.apple.CoreSimulator.SimRuntime.iOS-27-2", [])
+          matches = [device for device in runtime if device["name"] == os.environ["SIMULATOR_MODEL"]]
+          if len(matches) != 1:
+              raise SystemExit(f"Expected one {os.environ['SIMULATOR_MODEL']} on iOS 27.2, found {len(matches)}")
+          udid = matches[0]["udid"]
+          subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], check=True, timeout=300)
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write(f"SIMULATOR_ID={udid}\n")
+          PYTHON
+      - name: Install and launch Cuven independently of XCTest
+        timeout-minutes: 3
+        run: |
+          xcrun simctl install "$SIMULATOR_ID" DerivedData/Build/Products/Debug-iphonesimulator/Cuven.app
+          xcrun simctl launch "$SIMULATOR_ID" dev.cuven.vpn
+          xcrun simctl terminate "$SIMULATOR_ID" dev.cuven.vpn
+      - name: Run unit and layout tests on the booted device
+        timeout-minutes: 12
+        run: |
+          xcodebuild -project Cuven.xcodeproj -scheme Cuven -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath DerivedData \
+            -parallel-testing-enabled NO -quiet test-without-building
