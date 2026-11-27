@@ -9,10 +9,12 @@ Cuven IP 将 iPhone 或 iPad 的原始 IPv4、IPv6 包转发到自有 Linux 网�
 在 Debian 或 Ubuntu 的 x86_64、ARM64 VPS 上启用 systemd 和 TUN 后，可以直接安装。以下命令下载固定版本、校验 SHA-256，然后启动交互式安装器。
 
 ```sh
-wget -O cuven-vps-install.sh https://raw.githubusercontent.com/yujielab/cuven-vpn/b5a30217b79dc9e2e6f468ea797a05ccb2e69cf5/downloads/cuven-vps-install.sh && echo '1ca3c88f0ccd591058fc3013c82e9e28fcf167a5baa7123509507a79794fcd37  cuven-vps-install.sh' | sha256sum -c - && sudo bash ./cuven-vps-install.sh
+wget -O cuven-vps-install.sh https://raw.githubusercontent.com/yujielab/cuven-vpn/dd232088cb06bef1f13377dd0fad3df8b8253fe4/downloads/cuven-vps-install.sh && echo 'aeb564eb9ddd8e1b1bea9dfd33c18fe14372ac3d7a428a037a7154066ad13345  cuven-vps-install.sh' | sha256sum -c - && sudo bash ./cuven-vps-install.sh
 ```
 
 安装器自带网关二进制，并在启动前按 VPS 当前时间检查 TLS 证书的有效期。已有标准路径的 Let's Encrypt 证书会自动复用。省略证书时，可在提示中同意通过 HTTP-01 签发。网关子域名应指向 VPS，Cloudflare 普通代理用户可为此子域名选择「仅 DNS」。签发与续签需要公网 TCP 80，隧道默认使用 UDP 4433。首次安装中断后可用相同参数重试。已安装时，重复指定原来的证书、端口和地址族会沿用现有配置和令牌。变更这些设置需要显式传入 `--reconfigure`。遇到旧版留下的无安装标记目录时，安装器会保留现场并提示检查。对于 Certbot 托管的证书，续签成功后，安装器配置的钩子会重启正在使用这份证书的网关，使新连接能看到新证书。已停用的网关会保持停用。无人值守安装可在最后的脚本命令后加 `--domain vpn.example.com --accept-terms`，将示例域名换成本机域名。
+
+已有网关可在上方命令末尾加 `--upgrade`。安装器只更新程序，沿用已部署的令牌、证书、端口和防火墙设置。更新会短暂重启服务。同一版本重复执行会复用现有进程。如果新版启动失败，安装器会恢复原程序。首次部署时也可直接使用 `--upgrade`。
 
 从源码安装需要 Go 1.26.3 或更高版本。运行 `sudo bash deploy/setup-gateway.sh` 进入相同的交互流程。在 Linux 构建机运行 `bash scripts/package-gateway-installer.sh cuven-vps-install.sh` 可重新构建两个架构的安装包。
 
@@ -26,6 +28,8 @@ sudo ./deploy/install-gateway.sh \
 ```
 
 安装程序会构建网关、生成一个客户端接入令牌并启动 systemd 服务。接入令牌保存在 `/etc/cuven-gateway/token`，仅 root 可读。通过私有管理连接读取，并录入 Cuven 的「网关接入令牌」字段。IPv4 客户端地址固定为 `10.66.0.2`。VPS 有原生 IPv6 出口时，可传入 `--ipv6`，并在客户端启用「网关支持 IPv6」。网关会在认证时声明双栈能力。当前网关支持一个已认证客户端。
+
+两端均支持 Cuven IP v2 时，TLS 握手会协商 1500 字节的内层 MTU。较大的 IP 包可拆成多个外层 QUIC 数据报。任一端使用 v1 时沿用 1280 字节，部分 HTTP/3 服务在此 MTU 下可能握手超时。
 
 网关进行源地址检查，并使用独立的 nftables 表限制转发。网关阻止客户端访问主机服务、内网与链路本地地址。更新或续签证书后重启服务，已有接入令牌会保留。主机全局防火墙在重载时清空规则表的部署，需要重启网关服务恢复专用规则。
 
