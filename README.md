@@ -35,6 +35,12 @@ open Cuven.xcodeproj
 
 在 Xcode 为 `Cuven` 和 `CuvenTunnel` 选择同一个开发团队。真机签名需要两套可启用 Packet Tunnel Provider 的 App ID、对应的描述文件和同一个钥匙串访问组。默认标识符为 `dev.cuven.vpn` 和 `dev.cuven.vpn.tunnel`。若更换标识符，同时更新 `project.yml` 和 `ios/Shared/VPNProfile.swift`。选真机运行 `Cuven` scheme，并在首次连接时批准系统 VPN 配置。
 
+## 下载未签名 IPA
+
+CI 在未签名的 Release 设备构建和 iOS 模拟器测试都通过后，上传 GitHub Actions 产物 `Cuven-unsigned-ipa`。打开 [CI 工作流](https://github.com/yujielab/cuven-vpn/actions/workflows/ci.yml)，进入一次成功的运行，下载 Artifacts 中的该产物。下载得到的是同名压缩包，解压后是 `Cuven-unsigned.ipa`。产物随该次运行保留 90 天，并且不超过仓库的 Actions 保留上限。
+
+这个 IPA 是 zip，内含 `Payload/Cuven.app` 和嵌入的 `CuvenTunnel` Packet Tunnel 扩展，来自同一次 CI 里未签名的 Release 设备构建。安装包未签名，也不包含描述文件。安装到 iPhone 前需要自行签名并旁加载。开发团队、两套可启用 Packet Tunnel Provider 的 App ID、描述文件和同一个钥匙串访问组，与上文真机构建的要求相同。
+
 ## 配置 Hysteria 2
 
 输入服务器地址、端口、认证凭据及可选的 TLS 服务器名称，或导入 `hysteria2://`、`hy2://` 链接。首版支持标准 HY2、TCP、UDP 和证书校验，服务端需启用 UDP 以承载隧道 DNS。含混淆、端口跳跃或跳过证书校验的链接会被拒绝。官方服务端 v2.14.0 在任一 TCP 方向结束时关闭连接，依赖发送端半关闭后继续收结果的应用可选择 Cuven WG。 [Hysteria 2 协议规范](https://v2.hysteria.network/docs/developers/Protocol/)
@@ -62,7 +68,7 @@ go test -race ./...
 go vet ./...
 ```
 
-若提供官方 Hysteria 2 二进制文件，Go 测试还会拉起回环地址上的官方服务端验证互操作。GitHub Actions 使用固定版本与校验和，并另行构建设备目标及运行 iOS 模拟器测试。
+若提供官方 Hysteria 2 二进制文件，Go 测试还会拉起回环地址上的官方服务端验证互操作。GitHub Actions 使用固定版本与校验和，并另行构建设备目标、打包未签名 IPA、运行 iOS 模拟器测试。
 
 签名、系统 VPN 权限、Wi-Fi 和蜂窝切换、后台重连及应用兼容性需要在 iPhone 上验证。核心回环测试的握手时间无法代表公网首连或移动网络吞吐。
 
