@@ -41,6 +41,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    override func sleep(completionHandler: @escaping () -> Void) {
+        state.async {
+            if let session = self.session, session.ready { session.sleepInterval.begin() }
+            completionHandler()
+        }
+    }
+
+    override func wake() {
+        state.async {
+            guard let session = self.session, session.sleepInterval.needsReconnectOnWake(),
+                  session.ready else { return }
+            session.reconnectAttempts = 0
+            self.connectionFailed(session)
+        }
+    }
+
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
         state.async {
             guard messageData == TunnelConfiguration.rttRequest,
@@ -437,6 +453,7 @@ private final class Session {
     var installedMTU: Int?
     var routesInstalled: Bool { installedMTU != nil }
     var ready = false
+    var sleepInterval = TunnelSleepInterval()
     var connectedAt: DispatchTime?
     var reconnectAttempts = 0
     var monitor: NWPathMonitor?
@@ -463,6 +480,7 @@ private final class Session {
     }
 
     func takeEngine() -> MobileEngine? {
+        sleepInterval = TunnelSleepInterval()
         clearAttemptDeadline()
         let current = engine
         engine = nil
