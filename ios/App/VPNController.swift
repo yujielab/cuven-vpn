@@ -56,7 +56,13 @@ final class VPNController: ObservableObject {
 
     var canSave: Bool {
         guard canStart else { return false }
-        return hasNewCredential || (try? draftProfile()) != savedProfile || autoConnectPaused
+        return hasNewCredential || (try? draftProfile()) != savedProfile || autoConnectPaused || routingNeedsRepair
+    }
+
+    private var routingNeedsRepair: Bool {
+        guard let profile = savedProfile, profile.transport == .cuven,
+              let configuration = manager?.protocolConfiguration as? NETunnelProviderProtocol else { return false }
+        return !configuration.hasRequiredRouting(for: profile)
     }
 
     private var hasNewCredential: Bool {
@@ -214,9 +220,10 @@ final class VPNController: ObservableObject {
             let profile = try draftProfile()
             let sessionToken = once ? credential.trimmingCharacters(in: .whitespacesAndNewlines) : nil
             if let sessionToken { try VPNProfile.validateAccessToken(sessionToken) }
-            if profile != savedProfile || hasNewCredential || autoConnectPaused || !manager.isEnabled {
+            if profile != savedProfile || hasNewCredential || autoConnectPaused || !manager.isEnabled || routingNeedsRepair {
                 try await persist(profile, manager: manager, once: once)
             }
+            guard !routingNeedsRepair else { throw TunnelFailure.strictRouting }
             refreshStatus()
             if connect && (status == .invalid || status == .disconnected) {
                 if requiresAppStart {
@@ -340,13 +347,7 @@ final class VPNController: ObservableObject {
             values[AppCredentialHandoff.sessionIDKey] = Data(UUID().uuidString.utf8)
         }
         configuration.providerConfiguration = values
-        configuration.includeAllNetworks = profile.usesFullRouting
-        configuration.enforceRoutes = profile.blockLAN && !configuration.includeAllNetworks
-        configuration.excludeLocalNetworks = !profile.requiresEncryptedDNS && !profile.blockLAN
-        if profile.highSecurity {
-            configuration.excludeAPNs = false
-            configuration.excludeCellularServices = false
-        }
+        configuration.applyRouting(for: profile)
 
         let wasEnabled = manager.isEnabled
         let previousDescription = manager.localizedDescription

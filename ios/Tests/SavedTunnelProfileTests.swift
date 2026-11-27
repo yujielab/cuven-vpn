@@ -3,6 +3,41 @@ import XCTest
 @testable import Cuven
 
 final class SavedTunnelProfileTests: XCTestCase {
+    func testSavedFullTunnelAndDNSRoutesCanBeRepaired() throws {
+        guard #available(macOS 13.3, *) else { throw XCTSkip("Requires routing controls from macOS 13.3") }
+        let profile = try VPNProfile(host: "gateway.example", transport: .cuven, port: 4433)
+        let config = NETunnelProviderProtocol()
+        config.applyRouting(for: profile)
+        config.excludeAPNs = true
+        config.excludeCellularServices = true
+        XCTAssertTrue(config.hasRequiredRouting(for: profile))
+        config.includeAllNetworks = false
+        XCTAssertFalse(config.hasRequiredRouting(for: profile))
+        config.applyRouting(for: profile)
+        config.excludeLocalNetworks = true
+        XCTAssertFalse(config.hasRequiredRouting(for: profile))
+        config.applyRouting(for: profile)
+        XCTAssertTrue(config.includeAllNetworks)
+        XCTAssertFalse(config.excludeLocalNetworks)
+        XCTAssertTrue(config.hasRequiredRouting(for: profile))
+    }
+
+    func testHighSecurityRequiresBothSystemServiceExclusionsToBeOff() throws {
+        guard #available(macOS 13.3, *) else { throw XCTSkip("Requires routing controls from macOS 13.3") }
+        let profile = try VPNProfile(host: "192.0.2.1", transport: .cuven, port: 4433, highSecurity: true)
+        let config = NETunnelProviderProtocol()
+        config.applyRouting(for: profile)
+        config.excludeAPNs = true
+        XCTAssertFalse(config.hasRequiredRouting(for: profile))
+        config.applyRouting(for: profile)
+        config.excludeCellularServices = true
+        XCTAssertFalse(config.hasRequiredRouting(for: profile))
+        config.applyRouting(for: profile)
+        XCTAssertFalse(config.excludeAPNs)
+        XCTAssertFalse(config.excludeCellularServices)
+        XCTAssertTrue(config.hasRequiredRouting(for: profile))
+    }
+
     func testOnlyTheSameGatewayAndCredentialBindingKeepAnUnsavedDraft() throws {
         let original = NETunnelProviderProtocol()
         let profile = try VPNProfile(host: "first.example", transport: .cuven, port: 4433)

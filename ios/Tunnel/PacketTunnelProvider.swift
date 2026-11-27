@@ -79,17 +79,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         let profile = try VPNProfile.decode(profileData)
         guard profile.transport == .cuven else { throw TunnelFailure.configuration }
-        if profile.usesFullRouting && !configuration.includeAllNetworks {
-            throw TunnelFailure.strictRouting
-        }
-        if profile.requiresEncryptedDNS && configuration.excludeLocalNetworks {
-            throw TunnelFailure.strictRouting
-        }
-        if profile.highSecurity {
-            guard !configuration.excludeAPNs, !configuration.excludeCellularServices else {
-                throw TunnelFailure.strictRouting
-            }
-        }
+        guard configuration.hasRequiredRouting(for: profile) else { throw TunnelFailure.strictRouting }
         let token: String
         let reference = configuration.passwordReference ?? values[TunnelConfiguration.credentialKey] as? Data
         let sessionID = values[AppCredentialHandoff.sessionIDKey] as? Data
