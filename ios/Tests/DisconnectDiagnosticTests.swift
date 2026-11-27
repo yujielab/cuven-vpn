@@ -29,6 +29,16 @@ final class DisconnectDiagnosticTests: XCTestCase {
         XCTAssertEqual(DisconnectDiagnostic.message(for: wrapper), TunnelFailure.credentialEntitlement.errorDescription)
     }
 
+    func testLockedKeychainReportsUnlockThroughSystemWrapper() {
+        let wrapped = NSError(domain: NEVPNConnectionErrorDomain, code: NEVPNConnectionError.pluginFailed.rawValue,
+                              userInfo: [NSUnderlyingErrorKey: TunnelFailure.credentialLocked as NSError])
+        let message = DisconnectDiagnostic.message(for: wrapped)
+        XCTAssertTrue(message?.contains("-25308") == true)
+        XCTAssertTrue(message?.contains("解锁") == true)
+        XCTAssertNotEqual(message, TunnelFailure.credentialEntitlement.errorDescription)
+        XCTAssertNotEqual(message, TunnelFailure.credentialUnavailable.errorDescription)
+    }
+
     func testSystemCodeAndUnknownErrorsDoNotExposeErrorDetails() {
         let system = NSError(domain: NEVPNConnectionErrorDomain, code: NEVPNConnectionError.noNetworkAvailable.rawValue,
                              userInfo: [NSLocalizedDescriptionKey: "private data"])

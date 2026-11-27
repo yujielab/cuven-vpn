@@ -6,6 +6,7 @@ enum TunnelFailure: Int, LocalizedError, CustomNSError {
     case credentialUnavailable, credentialEntitlement, manualCredential
     case gatewayIPv6, certificateName, certificateTime, certificateTrust, gatewayTimeout
     case gatewayBusy, gatewayRejected
+    case credentialLocked
 
     static func fromStartupCode(_ code: String) -> Self? {
         switch code {
@@ -36,6 +37,7 @@ enum TunnelFailure: Int, LocalizedError, CustomNSError {
         case .packetFormat: "隧道核心返回了无效的数据包。"
         case .cancelled: "VPN 连接已取消。"
         case .credentialUnavailable: "隧道扩展无法读取已保存的凭据。请在 Cuven 内重新输入令牌。"
+        case .credentialLocked: "钥匙串暂时不可访问（-25308）。请解锁设备后再连接。"
         case .credentialEntitlement: "隧道扩展读取凭据时收到 -34018。请核对扩展和主 App 签名中的共享钥匙串组。"
         case .manualCredential: "本次启动缺少匹配的手动连接凭据。请从 Cuven 内输入令牌并连接。"
         case .strictRouting: "系统 VPN 全流量路由配置不完整，请在 Cuven 中重新保存。"

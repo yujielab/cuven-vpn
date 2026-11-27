@@ -122,6 +122,8 @@ enum CredentialError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .keychain(errSecInteractionNotAllowed), .appKeychain(errSecInteractionNotAllowed):
+            "钥匙串暂时不可访问（-25308）。请解锁设备后重试。"
         case .appKeychain(let status):
             "系统默认钥匙串写入失败（SecItemAdd，\(status)）。" +
                 (status == errSecMissingEntitlement ? "请核对重签后主 App 的 application-identifier 和描述文件。" : "")

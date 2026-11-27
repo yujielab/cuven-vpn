@@ -21,7 +21,10 @@ final class VPNController: ObservableObject {
     @Published private(set) var autoConnectPaused = false
     @Published private(set) var offersOneTimeStart = false
     @Published private(set) var requiresAppStart = false
-    @Published private(set) var hasCredential = false
+    private enum SavedCredential { case absent, available, awaitingUnlock }
+    @Published private var savedCredential = SavedCredential.absent
+    var hasCredential: Bool { savedCredential == .available }
+    var credentialAwaitsUnlock: Bool { savedCredential == .awaitingUnlock }
     @Published private(set) var status = NEVPNStatus.invalid
     @Published private var rtt = TunnelRTTMeasurement()
     var tunnelRTT: Int64? { rtt.milliseconds }
@@ -399,13 +402,24 @@ final class VPNController: ObservableObject {
         return profile
     }
 
+    func retryCredentialAfterUnlock() {
+        if credentialAwaitsUnlock { refreshCredential() }
+    }
+
     private func refreshCredential() {
-        guard let credentialReference,
-              let token = try? KeychainCredential.load(reference: credentialReference) else {
-            hasCredential = false
+        guard let credentialReference else {
+            savedCredential = .absent
             return
         }
-        hasCredential = (try? VPNProfile.validateAccessToken(token)) != nil
+        do {
+            let token = try KeychainCredential.load(reference: credentialReference)
+            try VPNProfile.validateAccessToken(token)
+            savedCredential = .available
+        } catch CredentialError.keychain(errSecInteractionNotAllowed) {
+            savedCredential = .awaitingUnlock
+        } catch {
+            savedCredential = .absent
+        }
     }
 
     private static func splitList(_ text: String) -> [String] {

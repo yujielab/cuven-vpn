@@ -1,5 +1,6 @@
 import NetworkExtension
 import SwiftUI
+import UIKit
 
 @main
 struct CuvenApp: App {
@@ -83,6 +84,11 @@ private struct ConnectionView: View {
                     SecureField(vpn.hasCredential ? "令牌已保存，输入以替换" : "网关接入令牌", text: $vpn.credential)
                         .cuvenSecureInput()
                         .accessibilityLabel("Cuven IP 接入令牌")
+                    if vpn.credentialAwaitsUnlock {
+                        Text("钥匙串暂时不可访问。解锁设备后，Cuven 会重新读取已保存的令牌。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     if vpn.offersOneTimeStart && !vpn.hasCredential && vpn.autoConnect == .off {
                         Text("可仅为本次连接使用令牌。下次从 Cuven 连接时需要重新输入。")
                             .font(.footnote)
@@ -126,7 +132,13 @@ private struct ConnectionView: View {
                 }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { vpn.refreshStatus() }
+                if phase == .active {
+                    vpn.retryCredentialAfterUnlock()
+                    vpn.refreshStatus()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+                vpn.retryCredentialAfterUnlock()
             }
             .onReceive(NotificationCenter.default.publisher(for: .NEVPNStatusDidChange)) { _ in
                 vpn.refreshStatus()

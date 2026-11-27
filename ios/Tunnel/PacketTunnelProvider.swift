@@ -87,6 +87,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 token = try KeychainCredential.load(reference: reference)
             } catch CredentialError.keychain(errSecMissingEntitlement) {
                 throw TunnelFailure.credentialEntitlement
+            } catch CredentialError.keychain(errSecInteractionNotAllowed) {
+                throw TunnelFailure.credentialLocked
             } catch CredentialError.keychain(errSecItemNotFound), CredentialError.missing {
                 throw TunnelFailure.credentialUnavailable
             }
