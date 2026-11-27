@@ -4,8 +4,10 @@ package mobile
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -21,10 +23,11 @@ const (
 )
 
 var (
-	errEngineUsed     = errors.New("packet engine has already been used")
-	errEngineInactive = errors.New("packet engine is inactive")
-	errInvalidBatch   = errors.New("invalid packet batch")
-	errInvalidMTU     = errors.New("tunnel MTU must be between 1280 and 9000")
+	errEngineUsed      = errors.New("packet engine has already been used")
+	errEngineInactive  = errors.New("packet engine is inactive")
+	errInvalidBatch    = errors.New("invalid packet batch")
+	errInvalidMTU      = errors.New("tunnel MTU must be between 1280 and 9000")
+	errIPv6Unavailable = errors.New("Cuven gateway does not support IPv6")
 )
 
 type engineState uint8
@@ -108,10 +111,41 @@ func (e *Engine) StartCuven(endpoint, accessToken, serverName string, requireIPv
 		session, err := iptunnel.Dial(ctx, endpoint, token, &tls.Config{ServerName: serverName})
 		if err == nil && requireIPv6 && !session.IPv6Enabled() {
 			_ = session.Close()
-			return nil, errors.New("Cuven gateway does not support IPv6")
+			return nil, errIPv6Unavailable
 		}
 		return session, err
 	})
+}
+
+// StartCuvenDiagnosed returns an empty string on success or a stable, non-sensitive
+// reason for the iOS packet tunnel. Native error descriptions can include endpoints.
+func (e *Engine) StartCuvenDiagnosed(endpoint, accessToken, serverName string, requireIPv6, blockLAN bool) string {
+	return startFailureCode(e.StartCuven(endpoint, accessToken, serverName, requireIPv6, blockLAN))
+}
+
+func startFailureCode(err error) string {
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	var certificate *tls.CertificateVerificationError
+	var network net.Error
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, errIPv6Unavailable):
+		return "gateway-ipv6"
+	case errors.As(err, &hostname):
+		return "certificate-name"
+	case errors.As(err, &invalid) && invalid.Reason == x509.Expired:
+		return "certificate-time"
+	case errors.As(err, &certificate):
+		return "certificate"
+	case errors.As(err, &network) && network.Timeout():
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	default:
+		return "connection"
+	}
 }
 
 func (e *Engine) start(mtu int64, policy packetPolicy, open func(context.Context) (packetTunnel, error)) error {

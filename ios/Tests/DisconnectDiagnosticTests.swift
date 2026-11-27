@@ -4,6 +4,23 @@ import XCTest
 @testable import Cuven
 
 final class DisconnectDiagnosticTests: XCTestCase {
+    func testStartupCodesReachAppWithoutEndpointOrCredentialDetails() {
+        XCTAssertNil(TunnelFailure.fromStartupCode(""))
+        let cases: [(String, TunnelFailure)] = [
+            ("gateway-ipv6", .gatewayIPv6), ("certificate-name", .certificateName),
+            ("certificate-time", .certificateTime), ("certificate", .certificateTrust),
+            ("timeout", .gatewayTimeout), ("cancelled", .cancelled),
+            ("unknown private details", .connection)
+        ]
+        for (code, expected) in cases {
+            let failure = TunnelFailure.fromStartupCode(code)
+            XCTAssertEqual(failure, expected)
+            let wrapper = NSError(domain: NEVPNConnectionErrorDomain, code: NEVPNConnectionError.pluginFailed.rawValue,
+                                  userInfo: [NSUnderlyingErrorKey: expected as NSError])
+            XCTAssertEqual(DisconnectDiagnostic.message(for: wrapper), expected.errorDescription)
+        }
+    }
+
     func testUnderlyingProviderReasonWinsOverGenericPluginFailure() {
         let cause = NSError(domain: TunnelFailure.errorDomain, code: TunnelFailure.credentialEntitlement.rawValue)
         let wrapper = NSError(domain: NEVPNConnectionErrorDomain, code: NEVPNConnectionError.pluginFailed.rawValue,

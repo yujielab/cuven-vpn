@@ -140,26 +140,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let connection = session.current
         let blockLAN = session.blockLAN
         worker.async {
-            let connected: Bool
+            let failure: TunnelFailure?
             do {
                 if connection.profile.requiresEncryptedDNS {
                     try engine.requireEncryptedDNS()
                 }
-                try engine.startCuven(
+                let code = engine.startCuvenDiagnosed(
                     endpoint, accessToken: connection.token,
                     serverName: connection.profile.serverName ?? connection.profile.host,
                     requireIPv6: connection.profile.cuvenIPv6,
                     blockLAN: blockLAN
                 )
-                connected = true
+                failure = TunnelFailure.fromStartupCode(code)
             } catch {
-                connected = false
+                failure = .connection
             }
             self.state.async {
                 guard self.session === session, session.engine === engine else { return }
                 session.clearAttemptDeadline()
-                guard connected else {
-                    self.connectionFailed(session)
+                if let failure {
+                    self.connectionFailed(session, failure: failure)
                     return
                 }
                 // Reuse the address that worked, and alternate addresses if reconnect fails.
@@ -287,14 +287,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func connectionFailed(_ session: Session) {
+    private func connectionFailed(_ session: Session, failure: TunnelFailure = .connection) {
         let engine = session.takeEngine()
         worker.async { engine?.stop() }
         if !session.routesInstalled {
             if session.nextEndpoint < session.endpoints.count {
                 connect(session)
             } else {
-                terminate(session, failure: .connection)
+                terminate(session, failure: failure)
             }
             return
         }

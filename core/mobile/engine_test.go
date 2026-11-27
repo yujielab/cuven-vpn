@@ -3,15 +3,41 @@ package mobile
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"slices"
 	"testing"
 	"time"
 )
+
+func TestStartFailureCode(t *testing.T) {
+	expired := &tls.CertificateVerificationError{Err: x509.CertificateInvalidError{Reason: x509.Expired}}
+	hostname := &tls.CertificateVerificationError{Err: x509.HostnameError{Certificate: &x509.Certificate{}, Host: "private.example"}}
+	untrusted := &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{Cert: &x509.Certificate{}}}
+	for _, tc := range []struct {
+		err  error
+		code string
+	}{
+		{nil, ""}, {errIPv6Unavailable, "gateway-ipv6"}, {expired, "certificate-time"},
+		{hostname, "certificate-name"}, {untrusted, "certificate"},
+		{context.DeadlineExceeded, "timeout"}, {context.Canceled, "cancelled"},
+		{errors.New("private details"), "connection"},
+	} {
+		err := tc.err
+		if err != nil {
+			err = fmt.Errorf("startup: %w", err)
+		}
+		if got := startFailureCode(err); got != tc.code {
+			t.Errorf("got %q for %T, want %q", got, tc.err, tc.code)
+		}
+	}
+}
 
 func TestDecodeBatch(t *testing.T) {
 	batch := []byte{0, 3, 0x45, 1, 2, 0, 2, 0x60, 3}
