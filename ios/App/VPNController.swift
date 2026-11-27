@@ -32,6 +32,7 @@ final class VPNController: ObservableObject {
     private var savedProfile: VPNProfile?
     private var credentialReference: Data?
     private var connectionRequested = false
+    private var stoppingByUser = false
     private var pendingDisconnectReport: UUID?
 
     var canEdit: Bool {
@@ -106,12 +107,13 @@ final class VPNController: ObservableObject {
         switch next {
         case .connecting, .reasserting:
             pendingDisconnectReport = nil
-            connectionRequested = true
+            connectionRequested = !stoppingByUser
         case .connected:
             pendingDisconnectReport = nil
-            connectionRequested = true
+            connectionRequested = !stoppingByUser
             error = nil
         case .disconnected, .invalid:
+            stoppingByUser = false
             if connectionRequested && previous != next {
                 connectionRequested = false
                 showDisconnectReason()
@@ -196,6 +198,7 @@ final class VPNController: ObservableObject {
             }
         } catch {
             refreshStatus()
+            pendingDisconnectReport = nil
             if let failure = error as? CredentialError {
                 switch failure {
                 case .appKeychain(errSecMissingEntitlement), .unexpectedDefaultGroup: offersOneTimeStart = true
@@ -222,6 +225,7 @@ final class VPNController: ObservableObject {
                 return
             }
         }
+        stoppingByUser = true
         connectionRequested = false
         manager.connection.stopVPNTunnel()
         refreshStatus()
