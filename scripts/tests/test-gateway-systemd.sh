@@ -34,7 +34,9 @@ in_network ip link set wan0 up
 in_network ip link set wanpeer up
 in_network ip address add 198.51.100.1/24 dev wan0
 in_network ip route add default dev wan0
-mkdir -p "$work"/{pkg/bin,pkg/deploy,etc/systemd/system,locks,shim}
+mkdir -p "$work"/{pkg/bin,pkg/deploy,etc/systemd/system,etc/alternatives,locks,shim}
+# Ubuntu's /usr/bin/awk resolves via a symlink in /etc.
+ln -s "$(readlink -f "$(command -v awk)")" "$work/etc/alternatives/awk"
 install -m 0700 "$binary" "$work/pkg/bin/cuven-gateway-$(uname -m)"
 cp "$repo"/deploy/*.sh "$work/pkg/deploy/"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
