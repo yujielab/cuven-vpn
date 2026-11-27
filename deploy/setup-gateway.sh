@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+ask() {
+    printf '%s ' "$1" >&2
+    local answer
+    IFS= read -r answer || fail '输入已结束。自动安装请传入 --domain，申请新证书时加 --accept-terms。'
+    printf '%s' "$answer"
+}
+domain='' port=4433 family=auto cert='' key='' email=''
+accept_terms=false reconfigure=false custom_network=false
+while (($#)); do
+    case "$1" in
+        --domain|--port|--cert|--key|--email)
+            [[ -n "${2:-}" && "$2" != --* ]] || fail "$1 缺少参数。"
+            case "$1" in
+                --domain) domain=$2 ;;
+                --port) port=$2; custom_network=true ;;
+                --cert) cert=$2; custom_network=true ;;
+                --key) key=$2; custom_network=true ;;
+                --email) email=$2 ;;
+            esac
+            shift 2 ;;
+        --help) printf '%s\n' 'setup-gateway.sh [--domain HOST] [--accept-terms] [--email EMAIL] [--port PORT] [--cert PATH --key PATH] [--ipv6|--ipv4-only] [--reconfigure]'; exit 0 ;;
+        --accept-terms) accept_terms=true; shift ;;
+        --ipv6) family=6; custom_network=true; shift ;;
+        --ipv4-only) family=4; custom_network=true; shift ;;
+        --reconfigure) reconfigure=true; shift ;;
+        *) fail "未知选项 $1，请查看 --help。" ;;
+    esac
+done
+((EUID == 0)) || fail '请使用 sudo bash 运行安装器。'
+[[ -d /run/systemd/system && -c /dev/net/tun ]] || fail '需要已启动 systemd 并启用 /dev/net/tun 的 Linux VPS。'
+command -v apt-get >/dev/null || fail '此安装器支持 Debian 和 Ubuntu。'
+printf '%s\n' 'Cuven IP 网关安装与启动'
+if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
+    "$custom_network" && fail '更改已有网关参数时请加 --reconfigure。'
+    if [[ -n "$domain" ]]; then
+        current_cert=$(sed -n 's/^LoadCredential=certificate://p' /etc/systemd/system/cuven-gateway.service)
+        if ! openssl x509 -in "$current_cert" -noout -checkhost "$domain" | grep -Fxq "Hostname $domain does match certificate"; then
+            fail '已有网关证书与输入域名不匹配。更换配置请加 --reconfigure。'
+        fi
+    fi
+    systemctl enable --now cuven-gateway.service
+    systemctl is-active cuven-gateway.service
+    printf '%s\n' '已有配置已启用，接入令牌保存在 /etc/cuven-gateway/token。'
+    exit 0
+fi
+if [[ -z "$domain" ]]; then domain=$(ask '请输入指向本机的网关域名'); fi
+[[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ && "$domain" == *.* ]] || fail '域名格式无效。'
+[[ "$port" =~ ^[0-9]{1,5}$ ]] || fail '端口必须是数字。'
+((10#$port >= 1 && 10#$port <= 65535)) || fail '端口必须在 1 到 65535 之间。'
+if [[ -n "$cert" || -n "$key" ]]; then
+    [[ -r "$cert" && -r "$key" ]] || fail '--cert 和 --key 需要同时指定可读文件。'
+else
+    live="/etc/letsencrypt/live/$domain"
+    cert="$live/fullchain.pem"
+    key="$live/privkey.pem"
+    if [[ ! -r "$cert" || ! -r "$key" ]]; then
+        printf '%s\n' '将使用 HTTP-01 签发证书。网关域名应指向本机，公网 TCP 80 须可用，域名会进入公开证书透明度日志。'
+        if ! "$accept_terms"; then
+            agree=$(ask "同意 Let's Encrypt 服务条款（https://letsencrypt.org/repository/）并申请证书？[y/N]")
+            [[ "$agree" =~ ^([yY]|[yY][eE][sS]|是)$ ]] || fail '已取消证书申请。'
+        fi
+        contact=(--register-unsafely-without-email)
+        if [[ -n "$email" ]]; then contact=(--email "$email"); fi
+        if ! command -v certbot >/dev/null; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y certbot
+        fi
+        certbot certonly --standalone --non-interactive --agree-tos "${contact[@]}" \
+            --cert-name "$domain" -d "$domain" \
+            --deploy-hook '/bin/sh -c "if systemctl is-active --quiet cuven-gateway.service; then systemctl restart cuven-gateway.service; fi"'
+        if systemctl cat certbot.timer >/dev/null 2>&1; then
+            systemctl enable --now certbot.timer
+        fi
+    fi
+fi
+args=(--domain "$domain" --port "$port" --cert "$cert" --key "$key")
+if [[ "$family" == auto ]]; then
+    if ! command -v ip >/dev/null; then
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends iproute2
+    fi
+    route=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null || true)
+    if [[ "$route" =~ [[:space:]]src[[:space:]][23][[:xdigit:]]{3}: ]]; then family=6; else family=4; fi
+fi
+if [[ "$family" == 6 ]]; then args+=(--ipv6); fi
+printf '正在安装 %s，UDP %s，IPv%s 出口。\n' "$domain" "$port" "$family"
+installer_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+bash "$installer_dir/install-gateway.sh" "${args[@]}"
+systemctl is-active --quiet cuven-gateway.service || fail '服务尚未就绪。请查看 journalctl -u cuven-gateway。'
+printf '客户端网关 %s，UDP %s。读取接入令牌请运行 sudo cat /etc/cuven-gateway/token。\n' "$domain" "$port"

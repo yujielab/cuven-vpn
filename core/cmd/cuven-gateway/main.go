@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -74,7 +75,27 @@ func run(ctx context.Context, listen, cert, key, tokenPath, modelPath string, du
 		return err
 	}
 	defer listener.Close()
+	if err := notifyReady(); err != nil {
+		return fmt.Errorf("notify systemd: %w", err)
+	}
 	return serve(ctx, listener, device, token, dual, model)
+}
+
+func notifyReady() error {
+	socket := os.Getenv("NOTIFY_SOCKET")
+	if socket == "" {
+		return nil
+	}
+	connection, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: socket, Net: "unixgram"})
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	if err := connection.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return err
+	}
+	_, err = connection.Write([]byte("READY=1"))
+	return err
 }
 
 func openTUN(ctx context.Context, dual bool) (*os.File, error) {

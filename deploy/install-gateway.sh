@@ -72,7 +72,10 @@ if [[ -e "$unit" && ! -f "$state/install-version" ]]; then
     fail "$unit already exists. Keep the existing service and inspect it before installing."
 fi
 
-command -v go >/dev/null || fail 'Install Go 1.26.3 or newer and make it available to sudo'
+binary="$repo/bin/cuven-gateway-$(uname -m)"
+if [[ ! -f "$binary" ]]; then
+    command -v go >/dev/null || fail 'Use the standalone installer or install Go 1.26.3 or newer'
+fi
 if ! command -v nft >/dev/null || ! command -v ip >/dev/null ||
     ! command -v openssl >/dev/null || ! command -v sysctl >/dev/null; then
     apt-get update
@@ -101,7 +104,11 @@ if "$dual"; then wan6="$(outbound_interface -6 2606:4700:4700::1111)"; fi
 
 staging="$(mktemp -d /etc/.cuven-gateway.XXXXXX)"
 trap 'rm -rf -- "$staging"' EXIT
-(cd "$repo/core" && go build -mod=readonly -trimpath -o "$staging/cuven-gateway" ./cmd/cuven-gateway)
+if [[ -f "$binary" ]]; then
+    install -m 0700 "$binary" "$staging/cuven-gateway"
+else
+    (cd "$repo/core" && go build -mod=readonly -trimpath -o "$staging/cuven-gateway" ./cmd/cuven-gateway)
+fi
 
 cat >"$staging/firewall.nft" <<EOF
 add table inet cuven_gateway
@@ -139,10 +146,17 @@ fi
 cat >>"$staging/firewall.nft" <<EOF
         udp dport $port ct state new limit rate over 200/second burst 400 packets drop
     }
+    chain tunnel_mss {
+        # cuven0 MTU is 1280. Allow for the fixed IP and TCP headers (RFC 6691).
+        meta nfproto ipv4 tcp option maxseg size > 1240 tcp option maxseg size set 1240
+        meta nfproto ipv6 tcp option maxseg size > 1220 tcp option maxseg size set 1220
+    }
     chain forward {
         type filter hook forward priority -20; policy accept;
         iifname "cuven0" ip daddr @private4 drop
         iifname "cuven0" ip6 daddr @private6 drop
+        iifname "cuven0" tcp flags & syn == syn jump tunnel_mss
+        oifname "cuven0" tcp flags & syn == syn jump tunnel_mss
         iifname "cuven0" oifname "$wan4" ip saddr 10.66.0.2 accept
         iifname "$wan4" oifname "cuven0" ip daddr 10.66.0.2 ct state established,related accept
 EOF
@@ -192,6 +206,8 @@ After=network-online.target nftables.service
 Wants=network-online.target
 
 [Service]
+Type=notify
+NotifyAccess=main
 LoadCredential=certificate:$cert
 LoadCredential=private-key:$key
 LoadCredential=token:$state/token
@@ -215,6 +231,5 @@ EOF
 install -m 0644 "$staging/cuven-gateway.service" "$unit"
 systemctl daemon-reload
 systemctl enable cuven-gateway.service
-systemctl restart cuven-gateway.service
-systemctl is-active --quiet cuven-gateway.service || fail 'Gateway startup failed. Check journalctl -u cuven-gateway.'
+systemctl restart cuven-gateway.service || fail 'Gateway startup failed. Check journalctl -u cuven-gateway.'
 printf 'Cuven IP gateway: %s:%s (UDP)\nIPv6 forwarding: %s\nEnrollment token file: %s/token\n' "$domain" "$port" "$dual" "$state"
