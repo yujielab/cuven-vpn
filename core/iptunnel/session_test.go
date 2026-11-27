@@ -7,7 +7,9 @@ import (
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
+	"net"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -169,6 +171,86 @@ func TestLegacyClientKeepsOriginalMTU(t *testing.T) {
 	packet, err := client.ReadPacket(ctx)
 	if err != nil || !bytes.Equal(packet, testPacket6(1280)) {
 		t.Fatalf("legacy packet, length=%d error=%v", len(packet), err)
+	}
+}
+
+// A 1280-byte IPv6 path leaves 1232 bytes for the outer UDP payload.
+// A NAT64 gateway may see a larger local MTU and receive no usable PMTU hint.
+func TestSessionOverMinimumIPv6Path(t *testing.T) {
+	fixture := httptest.NewTLSServer(nil)
+	roots := x509.NewCertPool()
+	roots.AddCert(fixture.Certificate())
+	cert := fixture.TLS.Certificates[0]
+	fixture.Close()
+	gateway, err := Listen("127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gateway.Close()
+	hop, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hop.Close()
+	remote := gateway.Addr().(*net.UDPAddr).AddrPort()
+	remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
+	go func() {
+		var packet [4096]byte
+		var client netip.AddrPort
+		for {
+			n, source, err := hop.ReadFromUDPAddrPort(packet[:])
+			if err != nil {
+				return
+			}
+			if n > 1280-40-8 {
+				continue
+			}
+			destination := remote
+			if source == remote {
+				destination = client
+			} else {
+				client = source
+			}
+			if destination.IsValid() {
+				if _, err := hop.WriteToUDPAddrPort(packet[:n], destination); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	token := Token{1}
+	server := make(chan error, 1)
+	payload := testPacket6(MTU)
+	go func() {
+		conn, err := gateway.Accept(ctx)
+		if err != nil {
+			server <- err
+			return
+		}
+		peer, err := Authenticate(ctx, conn, token, true)
+		if err != nil {
+			server <- err
+			return
+		}
+		defer peer.Close()
+		packet, err := peer.ReadPacket(ctx)
+		if err == nil && !bytes.Equal(packet, payload) {
+			err = errors.New("received IP packet differs")
+		}
+		server <- err
+	}()
+	client, err := Dial(ctx, hop.LocalAddr().String(), token, &tls.Config{RootCAs: roots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.WritePacket(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-server; err != nil {
+		t.Fatal(err)
 	}
 }
 

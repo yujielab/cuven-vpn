@@ -67,6 +67,10 @@ type Session struct {
 
 func quicConfig() *quic.Config {
 	return &quic.Config{
+		// Start at QUIC's minimum UDP payload so both directions can complete
+		// the handshake across a 1280-byte IPv6 or translated path. QUIC
+		// probes for larger datagrams once the connection is established.
+		InitialPacketSize:     1200,
 		EnableDatagrams:       true,
 		HandshakeIdleTimeout:  authTimeout,
 		MaxIdleTimeout:        45 * time.Second,
