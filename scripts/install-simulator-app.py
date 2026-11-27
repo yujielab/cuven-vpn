@@ -31,22 +31,39 @@ def verify_binaries(pairs):
 def install(device, app):
     identifier = plistlib.loads((app / "Info.plist").read_bytes())["CFBundleIdentifier"]
     started = time.monotonic()
+    installed = None
     try:
         subprocess.run(["xcrun", "simctl", "install", device, str(app)], check=True, timeout=420)
         print(f"simctl install returned after {time.monotonic() - started:.1f}s", flush=True)
+        # On a successful install the default simulator device set normally
+        # contains one matching bundle. Avoid launching another slow simctl.
+        containers = Path.home() / "Library/Developer/CoreSimulator/Devices" / device / "data/Containers/Bundle/Application"
+        matches = []
+        for candidate in containers.glob("*/*.app/Info.plist"):
+            try:
+                with candidate.open("rb") as info:
+                    bundle_id = plistlib.load(info).get("CFBundleIdentifier")
+            except (OSError, ValueError, plistlib.InvalidFileException):
+                continue
+            if bundle_id == identifier:
+                matches.append(candidate.parent)
+        if len(matches) == 1:
+            installed = matches[0]
     except subprocess.TimeoutExpired:
         # CoreSimulator may finish installing before its command-line client returns.
         print("simctl install timed out. Checking the installed app and extension.", flush=True)
-    path = subprocess.check_output(
-        ["xcrun", "simctl", "get_app_container", device, identifier, "app"], text=True, timeout=45
-    ).strip()
-    if not path or not Path(path).is_dir():
-        raise RuntimeError("CoreSimulator did not report an installed application")
+    if installed is None:
+        path = subprocess.check_output(
+            ["xcrun", "simctl", "get_app_container", device, identifier, "app"], text=True, timeout=120
+        ).strip()
+        if not path or not Path(path).is_dir():
+            raise RuntimeError("CoreSimulator did not report an installed application")
+        installed = Path(path)
     pairs = []
     for bundle in (Path("."), Path("PlugIns/CuvenTunnel.appex")):
         info = plistlib.loads((app / bundle / "Info.plist").read_bytes())
         executable = bundle / info["CFBundleExecutable"]
-        pairs.append((app / executable, Path(path) / executable))
+        pairs.append((app / executable, installed / executable))
     verify_binaries(pairs)
     print("Verified the installed app and Packet Tunnel against this build.", flush=True)
 
