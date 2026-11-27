@@ -3,6 +3,7 @@
 /ios/Generated/
 /DerivedData/
 /Vendor/
+/build/
 /core/cuven-wg-relay
 *.xcuserstate
 *.xcarchive
