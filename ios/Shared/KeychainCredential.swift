@@ -21,7 +21,12 @@ enum KeychainCredential {
     static func storeForApp(_ credential: String) throws -> Data {
         try VPNProfile.validateAccessToken(credential)
         do {
-            // Omit kSecAttrAccessGroup so Security selects the signed default group.
+            // A re-signer can give several apps the same default group. Probe with
+            // non-secret data before putting a credential in the system-selected group.
+            let granted = try defaultAccessGroup()
+            guard KeychainAccessGroup.isApplicationGroup(granted, bundleID: Bundle.main.bundleIdentifier) else {
+                throw CredentialError.unexpectedDefaultGroup
+            }
             return try add(credential, group: nil)
         } catch CredentialError.keychain(let status) {
             throw CredentialError.appKeychain(status)
@@ -72,6 +77,14 @@ enum KeychainCredential {
     }
 
     private static func accessGroupForCurrentSignature(_ configured: String) throws -> String {
+        guard let group = try defaultAccessGroup(),
+              let shared = KeychainAccessGroup.resolve(configured, defaultGroup: group) else {
+            throw CredentialError.unresolvedSharedGroup
+        }
+        return shared
+    }
+
+    private static func defaultAccessGroup() throws -> String? {
         // The plist in an unsigned IPA can lack the App ID prefix. Read the
         // default group granted by the active signature using a non-secret item.
         let query: [String: Any] = [
@@ -87,12 +100,7 @@ enum KeychainCredential {
         let status = SecItemAdd(item as CFDictionary, &result)
         guard status == errSecSuccess else { throw CredentialError.keychain(status) }
         defer { SecItemDelete(query as CFDictionary) }
-        guard let attributes = result as? [String: Any],
-              let defaultGroup = attributes[kSecAttrAccessGroup as String] as? String,
-              let shared = KeychainAccessGroup.resolve(configured, defaultGroup: defaultGroup) else {
-            throw CredentialError.unresolvedSharedGroup
-        }
-        return shared
+        return (result as? [String: Any])?[kSecAttrAccessGroup as String] as? String
     }
 }
 
@@ -102,6 +110,7 @@ enum CredentialError: LocalizedError {
     case appKeychain(OSStatus)
     case sharedRequired
     case unresolvedSharedGroup
+    case unexpectedDefaultGroup
     case providerMissing
 
     var sharedGroupUnavailable: Bool {
@@ -116,6 +125,8 @@ enum CredentialError: LocalizedError {
         case .appKeychain(let status):
             "系统默认钥匙串写入失败（SecItemAdd，\(status)）。" +
                 (status == errSecMissingEntitlement ? "请核对重签后主 App 的 application-identifier 和描述文件。" : "")
+        case .unexpectedDefaultGroup:
+            "无法确认默认钥匙串属于本 App，令牌未保存。请核对重签后的 Bundle ID、application-identifier 和描述文件。"
         case .unresolvedSharedGroup:
             "无法从当前签名确定共享钥匙串组。请检查主 App 和扩展的 keychain-access-groups，或关闭自动连接后从 Cuven 内连接。"
         case .sharedRequired:

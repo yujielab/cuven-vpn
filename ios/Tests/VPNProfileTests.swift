@@ -19,6 +19,15 @@ final class VPNProfileTests: XCTestCase {
         XCTAssertNil(KeychainAccessGroup.resolve(group, defaultGroup: "dev.cuven.vpn"))
     }
 
+    func testApplicationDefaultGroupMustBelongToInstalledBundle() {
+        let app = "dev.cuven.vpn"
+        XCTAssertTrue(KeychainAccessGroup.isApplicationGroup("TEST123456." + app, bundleID: app))
+        for group in ["TEST123456.*", "TEST123456.other.product", "TEST123456.dev.cuven.vpn.shared", "com.apple.token"] {
+            XCTAssertFalse(KeychainAccessGroup.isApplicationGroup(group, bundleID: app))
+        }
+        XCTAssertFalse(KeychainAccessGroup.isApplicationGroup(nil, bundleID: app))
+    }
+
     func testManualAppStartRequiresMatchingReferenceAndValidToken() throws {
         let reference = Data([1, 2, 3])
         let token = String(Data(repeating: 1, count: 32).base64EncodedString().dropLast())

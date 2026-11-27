@@ -3,6 +3,12 @@ import Foundation
 enum KeychainAccessGroup {
     private static let prefixPlaceholder = "$(AppIdentifierPrefix)"
 
+    static func isApplicationGroup(_ group: String?, bundleID: String?) -> Bool {
+        guard let group, let bundleID, !bundleID.isEmpty, !bundleID.contains("*"),
+              let separator = group.firstIndex(of: "."), separator != group.startIndex else { return false }
+        return group[group.index(after: separator)...] == bundleID
+    }
+
     static func resolve(_ configured: String, defaultGroup: String? = nil) -> String? {
         let configuredPrefix = prefix(in: configured)
         let suffix: Substring

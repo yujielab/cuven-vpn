@@ -173,8 +173,11 @@ final class VPNController: ObservableObject {
             }
         } catch {
             refreshStatus()
-            if case CredentialError.appKeychain(errSecMissingEntitlement) = error {
-                offersOneTimeStart = true
+            if let failure = error as? CredentialError {
+                switch failure {
+                case .appKeychain(errSecMissingEntitlement), .unexpectedDefaultGroup: offersOneTimeStart = true
+                default: break
+                }
             }
             self.error = error.localizedDescription
         }
