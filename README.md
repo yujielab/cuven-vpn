@@ -71,6 +71,14 @@ open Cuven.xcodeproj
 
 用同一 Apple Developer 团队签名 `dev.cuven.vpn` 和 `dev.cuven.vpn.tunnel`，两者都应保留 Packet Tunnel 能力和同一个共享钥匙串组 `<App ID 前缀>.dev.cuven.vpn.shared`。出现 `-34018` 时，核对安装包中两个目标的签名授权。更换签名团队后可能需要重新录入令牌。 [Apple 钥匙串错误说明](https://developer.apple.com/documentation/security/errsecmissingentitlement)
 
+重签后可以在安装前检查两个目标的授权字段：
+
+```sh
+python3 scripts/check-signed-ipa.py ./Cuven-signed.ipa
+```
+
+macOS 使用系统自带的 `codesign` 和 `security`，Linux 使用 `ldid`（支持 `-arch arm64`）和 OpenSSL。工具在本机读取最终 IPA 中的签名权限、Bundle ID 和嵌入的描述文件。退出码 0 表示所检查字段匹配，1 表示身份、描述文件或 Packet Tunnel 字段冲突，2 表示未完成检查，3 表示手动连接所需字段匹配但共享组仍需修正。证书信任、设备是否在描述文件的授权范围内以及实际连接需要在设备上验证。
+
 ## 验证
 
 ```sh

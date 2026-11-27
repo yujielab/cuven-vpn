@@ -34,6 +34,8 @@ jobs:
           echo 'a2e905fb68446e9bb4008cdfe2e13e3f176d0cbcca828b71770f8e53fca91b73  xcodegen.zip' | shasum -a 256 -c
           unzip -q xcodegen.zip
           echo "$PWD/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Verify post-sign IPA checks with local fixtures
+        run: python3 -B -m unittest discover -s scripts/tests -p test_signed_ipa.py
       - name: Run Apple platform diagnostics tests
         run: ./scripts/test-apple-diagnostics.sh
       - name: Generate the Xcode project
