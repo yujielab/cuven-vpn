@@ -30,3 +30,6 @@ tool (
 	golang.org/x/mobile/cmd/gobind
 	golang.org/x/mobile/cmd/gomobile
 )
+
+// Hysteria extras uses a placeholder for its local core module. Gomobile resolves the full module graph.
+replace github.com/apernet/hysteria/core/v2 v2.0.0-00010101000000-000000000000 => github.com/apernet/hysteria/core/v2 v2.14.0
