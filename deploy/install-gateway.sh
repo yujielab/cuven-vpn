@@ -81,7 +81,7 @@ if ! command -v nft >/dev/null || ! command -v ip >/dev/null ||
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nftables iproute2 openssl procps
 fi
-openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || fail 'The TLS certificate has expired'
+bash "$repo/deploy/check-certificate-dates.sh" "$cert"
 openssl x509 -in "$cert" -noout -checkhost "$domain" |
     grep -Fxq "Hostname $domain does match certificate" || fail 'TLS certificate name does not match'
 certificate_public_key="$(openssl x509 -in "$cert" -noout -pubkey)"

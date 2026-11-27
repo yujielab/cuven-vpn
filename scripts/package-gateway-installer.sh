@@ -7,7 +7,7 @@ stage=$(mktemp -d)
 bundle=$(mktemp -- "${output}.XXXXXX")
 trap 'rm -rf -- "$stage"; rm -f -- "$bundle"' EXIT
 mkdir -p "$stage/bin" "$stage/deploy"
-cp "$repo/deploy/"{setup-gateway,install-gateway,install-certbot-hook}.sh "$stage/deploy/"
+cp "$repo/deploy/"{setup-gateway,install-gateway,install-certbot-hook,check-certificate-dates}.sh "$stage/deploy/"
 for arch in amd64 arm64; do
     case "$arch" in amd64) machine=x86_64 ;; arm64) machine=aarch64 ;; esac
     (cd "$repo/core" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build \

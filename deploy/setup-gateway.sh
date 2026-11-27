@@ -41,6 +41,7 @@ if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
     unit=/etc/systemd/system/cuven-gateway.service
     current_cert=$(sed -n 's/^LoadCredential=certificate://p' "$unit")
     current_key=$(sed -n 's/^LoadCredential=private-key://p' "$unit")
+    bash "$installer_dir/check-certificate-dates.sh" "$current_cert"
     if [[ -n "$domain" ]]; then
         if ! openssl x509 -in "$current_cert" -noout -checkhost "$domain" | grep -Fxq "Hostname $domain does match certificate"; then
             fail '已有网关证书与输入域名不匹配。更换配置请加 --reconfigure。'

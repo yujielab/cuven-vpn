@@ -30,6 +30,8 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: go build ./cmd/cuven-gateway
+      - name: Check gateway certificate validity windows
+        run: bash ../scripts/tests/test-certificate-dates.sh
       - name: Test the Certbot renewal hook in a temporary filesystem
         run: |
           docker run --rm --read-only --network none --tmpfs /etc:exec --tmpfs /tmp:exec \
