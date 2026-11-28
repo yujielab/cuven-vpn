@@ -73,6 +73,12 @@ if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
     if "$upgrade"; then bash "$installer_dir/upgrade-gateway.sh" "$current_cert" "$current_key"; fi
     systemctl enable --now cuven-gateway.service
     systemctl is-active cuven-gateway.service
+    hook=/etc/letsencrypt/renewal-hooks/deploy/50-cuven-gateway
+    if [[ -f /etc/cuven-gateway/.certbot-reload-pending && -x "$hook" &&
+          "$current_cert" == /etc/letsencrypt/live/*/fullchain.pem ]] &&
+          grep -Fxq '# Managed by Cuven gateway.' "$hook"; then
+        RENEWED_LINEAGE="${current_cert%/fullchain.pem}" "$hook" --retry
+    fi
     printf '%s\n' '已有配置已启用，接入令牌保存在 /etc/cuven-gateway/token。'
     exit 0
 fi

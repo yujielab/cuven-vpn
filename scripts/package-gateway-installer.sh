@@ -8,6 +8,7 @@ bundle=$(mktemp -- "${output}.XXXXXX")
 trap 'rm -rf -- "$stage"; rm -f -- "$bundle"' EXIT
 mkdir -p "$stage/bin" "$stage/deploy"
 cp "$repo/deploy/"{setup-gateway,install-gateway,gateway-config-rollback,gateway-preflight,upgrade-gateway,install-certbot-hook,check-certificate-dates}.sh "$stage/deploy/"
+cp "$repo/deploy/migrate-certbot-hook.py" "$stage/deploy/"
 for arch in amd64 arm64; do
     case "$arch" in amd64) machine=x86_64 ;; arm64) machine=aarch64 ;; esac
     (cd "$repo/core" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build \

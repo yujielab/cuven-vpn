@@ -18,6 +18,8 @@ wget -O cuven-vps-install.sh https://raw.githubusercontent.com/yujielab/cuven-vp
 
 已有网关的接入令牌丢失、内容无效或文件权限过宽时，安装器会在重启服务前退出。可从自己的备份恢复原令牌到 `/etc/cuven-gateway/token`，将所有者设为 root、权限设为 `0600` 后重试。首次安装若在 Certbot 签发阶段中断，可直接重跑上方命令；令牌会在证书通过检查后创建。
 
+使用 Certbot 自动续签时，网关会先检查接入令牌。若令牌异常，当前进程继续使用原证书，Certbot 日志会说明新证书尚待载入。恢复原令牌后，重新运行上方安装命令即可载入新证书。安装器会识别已经重启过的服务，避免重复断开连接。
+
 从源码安装需要 Go 1.26.3 或更高版本。运行 `sudo bash deploy/setup-gateway.sh` 进入相同的交互流程。在 Linux 构建机运行 `bash scripts/package-gateway-installer.sh cuven-vps-install.sh` 可重新构建两个架构的安装包。
 
 在 VPS 的仓库目录执行，下例使用 UDP 4433：

@@ -41,7 +41,7 @@ mkdir -p "$work"/{pkg/bin,pkg/deploy,etc/systemd/system,etc/alternatives,locks,s
 # Ubuntu's /usr/bin/awk resolves via a symlink in /etc.
 ln -s "$(readlink -f "$(command -v awk)")" "$work/etc/alternatives/awk"
 install -m 0700 "$binary" "$work/pkg/bin/cuven-gateway-$(uname -m)"
-cp "$repo"/deploy/*.sh "$work/pkg/deploy/"
+cp "$repo"/deploy/*.sh "$repo/deploy/migrate-certbot-hook.py" "$work/pkg/deploy/"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
     -subj /CN=gateway.example -addext subjectAltName=DNS:gateway.example -days 1 \
     -keyout "$work/qa.key" -out "$work/qa.crt" >/dev/null 2>&1
@@ -57,7 +57,10 @@ if [ -n "${CUVEN_TEST_LIVE_WORK:-}" ]; then
         daemon-reload)
             "$CUVEN_TEST_LIVE_WORK/publish-unit" "$CUVEN_TEST_LIVE_WORK"
             exec /usr/bin/systemctl daemon-reload ;;
-        start|stop|restart|is-active)
+        enable)
+            [ "$*" = "enable --now cuven-gateway.service" ] || exit 2
+            exec /usr/bin/systemctl start "${CUVEN_TEST_LIVE_WORK##*/}.service" ;;
+        start|stop|restart|try-restart|is-active)
             action=$1
             shift
             if [ "${1:-}" = --quiet ]; then shift; fi
@@ -164,7 +167,7 @@ filter=()
 if grep -Eq '^ExecStart=.* -listen :4513 ' "$source"; then
     filter=(-e '/^ExecStart=/i ExecStartPre=/bin/false')
 fi
-sed -e "s|/etc/cuven-gateway|$work/etc/cuven-gateway|g" \
+sed -e "s|/etc/cuven-gateway|$work/etc/cuven-gateway|g" -e "s|/etc/letsencrypt|$work/etc/letsencrypt|g" \
     -e "/^\[Service\]$/a NetworkNamespacePath=/run/netns/$name" "${filter[@]}" \
     "$source" >"/run/systemd/system/$name.service"
 chmod 0644 "/run/systemd/system/$name.service"
@@ -280,6 +283,45 @@ check_service
 [[ "$token_before" == "$(sha256sum "$work/etc/cuven-gateway/token")" ]]
 in_network env SSL_CERT_FILE="$work/qa.crt" "$probe" "$work/etc/cuven-gateway/token"
 echo "Verified old listener authentication after an interrupted binary upgrade and a rejected candidate."
+# Exercise Certbot's installed deploy hook against the live systemd invocation.
+systemctl reset-failed "$unit"
+mv -- "$work/working-gateway" "$packaged"
+printf "%s\n" "[req]" "distinguished_name = dn" "[dn]" >"$work/openssl.cnf"
+in_network unshare --mount --propagation private -- bash -eu -c '
+    work=$1 probe=$2
+    mount --bind "$work/etc" /etc
+    mount --bind "$work/locks" /run/lock
+    export PATH="$work/shim:$PATH" CUVEN_TEST_LIVE_WORK="$work"
+    live=/etc/letsencrypt/live/gateway.example
+    state=/etc/cuven-gateway
+    source_unit=/etc/systemd/system/cuven-gateway.service
+    mkdir -p "$live" /etc/letsencrypt/renewal
+    touch /etc/letsencrypt/renewal/gateway.example.conf
+    # PID 1 still holds the old leaf. Stage a newly issued leaf at its new path.
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+        -subj /CN=gateway.example -addext subjectAltName=DNS:gateway.example -days 1 \
+        -keyout "$live/privkey.pem" -out "$live/fullchain.pem" -config "$work/openssl.cnf" >/dev/null 2>&1
+    sed -i -e "s|LoadCredential=certificate:.*|LoadCredential=certificate:$live/fullchain.pem|" \
+        -e "s|LoadCredential=private-key:.*|LoadCredential=private-key:$live/privkey.pem|" "$source_unit"
+    bash "$work/pkg/deploy/install-certbot-hook.sh" "$live/fullchain.pem" "$live/privkey.pem"
+    systemctl daemon-reload
+    generation() { systemctl show cuven-gateway.service --property=InvocationID --value; }
+    old=$(generation)
+    [[ ${#old} == 32 ]]
+    mv "$state/token" "$work/renewal-token"
+    if RENEWED_LINEAGE="$live" /etc/letsencrypt/renewal-hooks/deploy/50-cuven-gateway >"$work/renewal.log" 2>&1; then exit 1; fi
+    grep -Fq "续签证书尚未载入" "$work/renewal.log"
+    [[ "$(generation)" == "$old" && "$(cat "$state/.certbot-reload-pending")" == "$old $live" ]]
+    SSL_CERT_FILE="$work/qa.crt" "$probe" "$work/renewal-token"
+    mv "$work/renewal-token" "$state/token"
+    bash "$work/pkg/deploy/setup-gateway.sh"
+    new=$(generation)
+    [[ ${#new} == 32 && "$new" != "$old" && ! -e "$state/.certbot-reload-pending" ]]
+    SSL_CERT_FILE="$live/fullchain.pem" "$probe" "$state/token"
+    bash "$work/pkg/deploy/setup-gateway.sh"
+    [[ "$(generation)" == "$new" ]]
+' bash "$work" "$probe"
+echo "Verified Certbot reload deferral, original authentication, and one installer retry under a real systemd manager."
 systemctl stop "$unit"
 if in_network ip link show cuven0 >/dev/null 2>&1; then
     echo "Tunnel interface remained after service stop" >&2

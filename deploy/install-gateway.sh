@@ -259,7 +259,6 @@ if [[ ! -f "$state/install-version" ]]; then
             fail '已有服务与待恢复的安装参数不同。请用首次安装参数重试并保留原服务文件。'
     fi
 fi
-bash "$repo/deploy/install-certbot-hook.sh" "$cert" "$key"
 install -d -m 0700 "$destination"
 updates=$(mktemp -d "$destination/.install.XXXXXXXX")
 if [[ "$destination" != "$state" ]]; then
@@ -272,6 +271,7 @@ for file in firewall.nft forwarding.conf gateway-name cuven-gateway; do
     if [[ "$file" == cuven-gateway ]]; then mode=0700; fi
     install -m "$mode" "$staging/$file" "$updates/$file"
 done
+bash "$repo/deploy/install-certbot-hook.sh" "$cert" "$key" "$updates/cuven-gateway"
 unit_tmp=$(mktemp /etc/systemd/system/.cuven-gateway.XXXXXXXX)
 install -m 0644 "$staging/cuven-gateway.service" "$unit_tmp"
 
@@ -312,4 +312,5 @@ if "$reconfiguring"; then
     mv -T -- "$backup" "$updates/committed"
     reconfiguring=false
 fi
+rm -f -- "$state/.certbot-reload-pending"
 printf 'Cuven IP gateway: %s:%s (UDP)\nIPv6 forwarding: %s\nEnrollment token file: %s/token\n' "$domain" "$port" "$dual" "$state"
