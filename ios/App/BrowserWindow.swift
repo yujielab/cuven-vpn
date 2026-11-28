@@ -1,4 +1,5 @@
 import Network
+import NetworkExtension
 import SwiftUI
 import WebKit
 
@@ -69,9 +70,15 @@ final class BrowserTab: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     func close() {
+        guard !closed else { return }
         closed = true
         webView.stopLoading()
         webView.navigationDelegate = nil
+        // A finished document can still run scripts while its sheet is dismissing.
+        webView.loadHTMLString("""
+            <!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'">
+            <title>浏览已结束</title>
+            """, baseURL: nil)
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
@@ -127,8 +134,10 @@ struct BrowserWindow: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var editing: Bool
+    private let permit: @MainActor () -> Bool
 
     init(page: BrowserPage, permit: @escaping @MainActor () -> Bool) {
+        self.permit = permit
         _tab = StateObject(wrappedValue: BrowserTab(page: page, permit: permit))
     }
 
@@ -168,6 +177,9 @@ struct BrowserWindow: View {
         }
         .onAppear { tab.start() }
         .onDisappear { tab.close() }
+        .onReceive(NotificationCenter.default.publisher(for: .NEVPNStatusDidChange)) { _ in
+            if tab.page.isLive && !permit() { tab.close(); dismiss() }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { tab.close(); dismiss() }
         }

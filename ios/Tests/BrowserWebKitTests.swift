@@ -34,6 +34,13 @@ final class BrowserWebKitTests: XCTestCase {
         }
         XCTAssertEqual(tab.webView.title, "Cuven HTTPS fixture", tab.error ?? "Expected the private origin through CONNECT")
         XCTAssertEqual(tab.webView.url, destination)
+        tab.close()
+        let closeDeadline = ContinuousClock.now + .seconds(5)
+        while tab.webView.title != "浏览已结束", ContinuousClock.now < closeDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(tab.webView.title, "浏览已结束")
+        XCTAssertNotEqual(tab.webView.url, destination)
     }
 
     @MainActor
