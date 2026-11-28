@@ -97,6 +97,47 @@ class SigningFields(unittest.TestCase):
         with self.assertRaises(signing.InspectionError):
             signing.device_problems([("App", {"ProvisionedDevices": [123]})])
 
+    def test_provisioning_platform_when_declared(self):
+        info, signed, profile = fields()
+        for platforms, valid in ((["iOS"], True), (["tvOS", "iOS"], True),
+                                 (["OSX"], False), (["tvOS"], False), ([], False)):
+            with self.subTest(platforms=platforms):
+                *_, errors, _ = signing.checks("App", info, signed, dict(profile, Platform=platforms), NOW)
+                self.assertEqual(not errors, valid)
+        profile.pop("Platform", None)
+        *_, errors, _ = signing.checks("App", info, signed, profile, NOW)
+        self.assertEqual(errors, [])
+
+    def test_macho_device_platforms_and_command_bounds(self):
+        def thin(*commands):
+            body = b"".join(commands)
+            return struct.pack("<8I", 0xFEEDFACF, signing.ARM64, 0, 2, len(commands), len(body), 0, 0) + body
+
+        def build(platform, tools=0):
+            return struct.pack("<6I", 0x32, 24, platform, 0x110000, 0x110000, tools)
+
+        old_ios = struct.pack("<4I", 0x25, 16, 0x90000, 0x90000)
+        for image in (thin(build(2)), thin(old_ios)):
+            self.assertIsNone(signing.code_signature(image, 0, len(image)))
+        for image in (thin(build(1)), thin(build(7)), thin(old_ios, build(7))):
+            with self.assertRaises(signing.NonDeviceExecutable):
+                signing.code_signature(image, 0, len(image))
+        for image in (thin(struct.pack("<3I", 0x32, 12, 2)), thin(build(2, tools=1))):
+            with self.assertRaises(signing.InspectionError):
+                signing.code_signature(image, 0, len(image))
+
+    @unittest.skipUnless(sys.platform == "darwin", "uses the iOS simulator SDK")
+    def test_arm64_simulator_executable_is_reported_before_signer_mismatch(self):
+        with tempfile.TemporaryDirectory() as path:
+            root = pathlib.Path(path)
+            binary = root / "simulator-app"
+            subprocess.run(
+                ["xcrun", "--sdk", "iphonesimulator", "clang", "-arch", "arm64",
+                 "-mios-simulator-version-min=17.0", "-x", "c", "-", "-o", str(binary)],
+                input=b"int main(void) { return 0; }", capture_output=True, check=True,
+            )
+            self.assertIn("iOS 模拟器", signing.signer_problem(binary, {}, root, NOW))
+
     def test_expired_profile(self):
         info, signed, profile = fields()
         *_, errors, _ = signing.checks("App", info, signed, profile, NOW + dt.timedelta(days=2))

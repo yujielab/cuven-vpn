@@ -22,6 +22,10 @@ class InspectionError(Exception):
     pass
 
 
+class NonDeviceExecutable(InspectionError):
+    pass
+
+
 def plist(data, source):
     try:
         result = plistlib.loads(data)
@@ -50,6 +54,7 @@ def member(archive, counts, name):
 # Apple mach-o/fat.h, loader.h and Security's CSCommon: integers in the
 # embedded signature are big-endian even when the Mach-O header is not.
 ARM64 = 0x0100000C
+LEGACY_BUILD_PLATFORMS = {0x24: 1, 0x25: 2, 0x2F: 3, 0x30: 4}
 
 
 def region(offset, size, lower, upper):
@@ -87,19 +92,37 @@ def code_signature(data, start, end):
     count, length = struct.unpack_from("<II", data, start + 16)
     commands_end = region(position, length, position, end)
     signature = None
+    platforms = set()
+    minimum_platforms = set()
     for _ in range(count):
         region(position, 8, start, commands_end)
         command, size = struct.unpack_from("<II", data, position)
         following = region(position, size, position, commands_end)
         if size < 8:
             raise InspectionError("Mach-O 命令长度无效。")
-        if command == 0x1D:  # LC_CODE_SIGNATURE
+        if command == 0x32:  # LC_BUILD_VERSION
+            if size < 24:
+                raise InspectionError("Mach-O 平台版本命令不完整。")
+            platform, _, _, tool_count = struct.unpack_from("<4I", data, position + 8)
+            if 24 + 8 * tool_count > size:
+                raise InspectionError("Mach-O 平台工具列表超出命令边界。")
+            platforms.add(platform)
+        elif command in LEGACY_BUILD_PLATFORMS:  # LC_VERSION_MIN_*
+            if size < 16:
+                raise InspectionError("Mach-O 最低系统版本命令不完整。")
+            minimum_platforms.add(LEGACY_BUILD_PLATFORMS[command])
+        elif command == 0x1D:  # LC_CODE_SIGNATURE
             if size < 16 or signature is not None:
                 raise InspectionError("Mach-O 签名命令无效。")
             offset, size_on_disk = struct.unpack_from("<II", data, position + 8)
             begin = start + offset
             signature = (begin, region(begin, size_on_disk, commands_end, end))
         position = following
+    declared = platforms or minimum_platforms
+    if declared and 2 not in declared:  # PLATFORM_IOS
+        if declared == {7}:  # PLATFORM_IOSSIMULATOR
+            raise NonDeviceExecutable("arm64 可执行文件面向 iOS 模拟器。请使用 iphoneos SDK 构建设备版。")
+        raise NonDeviceExecutable("arm64 可执行文件声明的平台不包含 iOS 真机。请核对构建目标。")
     if signature is None:
         return None
     base, limit = signature
@@ -138,7 +161,10 @@ def signer_problem(binary, profile, temp, now):
         raise InspectionError("可执行文件为空。")
     with binary.open("rb") as source, mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data:
         for start, end in arm64_images(data):
-            parts = code_signature(data, start, end)
+            try:
+                parts = code_signature(data, start, end)
+            except NonDeviceExecutable as exc:
+                return str(exc)
             if parts is None:
                 return "arm64 可执行文件缺少证书签名。请使用描述文件授权的签名身份重签。"
             directory, cms = parts
@@ -226,6 +252,8 @@ def checks(label, info, signed, profile, now):
     prefixes = values(profile, "ApplicationIdentifierPrefix")
     if prefix not in prefixes or claim != prefix + "." + bundle:
         errors.append(f"Bundle ID 为 {bundle}，签入的 application-identifier 为 {claim}。")
+    if "Platform" in profile and "iOS" not in values(profile, "Platform"):
+        errors.append("描述文件的 Platform 列表未授权 iOS 真机。")
     profile_id = allowed.get("application-identifier")
     if not isinstance(profile_id, str) or not permits([profile_id], claim):
         errors.append("描述文件未授权签入的 application-identifier。")
