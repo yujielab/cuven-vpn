@@ -275,8 +275,12 @@ def checks(label, info, signed, profile, now):
     if signed.get("get-task-allow") is True and allowed.get("get-task-allow") is not True:
         errors.append("可执行文件签入了 get-task-allow 调试权限，描述文件未授权此权限。")
     ne = "com.apple.developer.networking.networkextension"
-    if "packet-tunnel-provider" not in values(signed, ne) or not permits(values(allowed, ne), "packet-tunnel-provider"):
+    requested = values(signed, ne)
+    granted = values(allowed, ne)
+    if "packet-tunnel-provider" not in requested or not permits(granted, "packet-tunnel-provider"):
         errors.append("可执行文件签名和描述文件需要同时授权 packet-tunnel-provider。")
+    elif any(not permits(granted, provider) for provider in requested):
+        errors.append("签名还声明了描述文件未授权的 Network Extension 类型。")
     setting = info.get("CuvenKeychainAccessGroup")
     group = None
     if isinstance(setting, str):

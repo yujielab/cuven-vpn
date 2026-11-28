@@ -63,6 +63,21 @@ class SigningFields(unittest.TestCase):
         self.assertTrue(errors)
         self.assertTrue(shared)
 
+    def test_additional_signed_network_extension_types_need_profile_grants(self):
+        info, signed, profile = fields()
+        signed[NETWORK] = ["packet-tunnel-provider", "dns-proxy"]
+        for allowed, expected in (
+            (["packet-tunnel-provider"], False),
+            (["packet-tunnel-provider", "app-proxy-provider"], False),
+            (["packet-tunnel-provider", "dns-proxy"], True),
+            (["*"], True),
+        ):
+            with self.subTest(allowed=allowed):
+                profile["Entitlements"][NETWORK] = allowed
+                *_, errors, shared = signing.checks("App", info, signed, profile, NOW)
+                self.assertEqual(not errors, expected)
+                self.assertEqual(shared, [])
+
     def test_debugger_permission_needs_an_explicit_profile_grant(self):
         info, signed, profile = fields()
         signed["get-task-allow"] = True
