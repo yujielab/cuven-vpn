@@ -46,6 +46,8 @@ jobs:
           sudo bash ../scripts/tests/test-gateway-systemd.sh ./cuven-gateway "$RUNNER_TEMP/cuven-test-client"
       - name: Check gateway certificate validity and TLS identity
         run: bash ../scripts/tests/test-certificate-dates.sh ./cuven-gateway
+      - name: Test egress verifier log privacy
+        run: python3 ../scripts/tests/test_check_egress.py
       - name: Test the Certbot renewal hook in a temporary filesystem
         run: |
           docker run --rm --read-only --network none --tmpfs /etc:exec --tmpfs /tmp:exec \

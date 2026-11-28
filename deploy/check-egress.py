@@ -9,6 +9,7 @@ import json
 import secrets
 import socket
 import ssl
+import sys
 from urllib.parse import urlsplit
 
 
@@ -44,6 +45,12 @@ class CheckServer(HTTPServer):
         self.expected = expected
         self.secret_path = path.encode("ascii")
         super().__init__((str(listen), port), CheckHandler)
+
+    def handle_error(self, request, client_address):
+        # The default handler prints the peer and a traceback to stderr.
+        error = sys.exc_info()[1]
+        if not isinstance(error, (ConnectionError, TimeoutError, ssl.SSLError)):
+            print(f"Egress check request failed ({type(error).__name__}).", file=sys.stderr)
 
     def get_request(self):
         connection, address = super().get_request()
