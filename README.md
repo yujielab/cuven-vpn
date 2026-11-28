@@ -19,7 +19,7 @@ Cuven IP 将 iPhone 或 iPad 的原始 IPv4、IPv6 包转发到自有 Linux 网�
 在 Debian 或 Ubuntu 的 x86_64、ARM64 VPS 上启用 systemd 和 TUN 后，可以直接安装。以下命令下载固定版本、校验 SHA-256，然后启动交互式安装器。
 
 ```sh
-wget -O cuven-vps-install.sh https://raw.githubusercontent.com/yujielab/cuven-vpn/44c7d302bc5edab8c374a62e6f525e91f3e9b27f/downloads/cuven-vps-install.sh && echo '32ce3db7fafed622f0cb159d4efb6d51034b252faa53cf82d8ba749d34a67fe9  cuven-vps-install.sh' | sha256sum -c - && sudo bash ./cuven-vps-install.sh
+wget -O cuven-vps-install.sh https://raw.githubusercontent.com/yujielab/cuven-vpn/3749d37e275d2e2577cd75fb9ebea35840e080ef/downloads/cuven-vps-install.sh && echo 'ba9f36531543e58eb7928b0afc415e1176ccd3ab156fd4093104e2c8aed9b90f  cuven-vps-install.sh' | sha256sum -c - && sudo bash ./cuven-vps-install.sh
 ```
 
 安装器自带网关二进制。启动前会检查证书有效期、匹配的私钥和 TLS 服务端用途，并按客户端的规则核对网关域名或 IP 与证书主题备用名称（SAN）。使用 IPv6 地址作为证书身份时，须提供含该 IP 的证书和私钥。iPhone 会在实际连接时验证证书链。已有标准路径的 Let's Encrypt 证书会自动复用。省略证书时，可在提示中同意通过 HTTP-01 签发。网关子域名应指向 VPS，Cloudflare 普通代理用户可为此子域名选择「仅 DNS」。签发与续签需要公网 TCP 80，隧道默认使用 UDP 4433。首次安装中断后可用相同参数重试。已安装时，重复指定原来的证书、端口和地址族会沿用现有配置和令牌。变更这些设置需要显式传入 `--reconfigure`。首次安装和更改 UDP 端口时会先试绑定目标端口。端口已占用时，现有网关继续运行。如果新配置通过预检后仍启动失败，安装器会恢复之前的配置、防火墙及服务运行状态，原接入令牌仍可使用。更改配置或升级网关程序时若安装进程被中断，可用同一新版安装器加 `--upgrade` 重试。安装器会先恢复上次运行状态。新程序仍无法启动时，原先运行的网关会重新使用旧程序接入。遇到旧版留下的无安装标记目录时，安装器会保留现场并提示检查。对于 Certbot 托管的证书，续签成功后，安装器配置的钩子会重启正在使用这份证书的网关，使新连接能看到新证书。已停用的网关会保持停用。无人值守安装可在最后的脚本命令后加 `--domain vpn.example.com --accept-terms`，将示例域名换成本机域名。
@@ -43,7 +43,7 @@ sudo ./deploy/install-gateway.sh \
   --key /etc/letsencrypt/live/vpn.example.com/privkey.pem
 ```
 
-安装程序会构建网关、生成一个客户端接入令牌并启动 systemd 服务。接入令牌保存在 `/etc/cuven-gateway/token`，仅 root 可读。通过私有管理连接读取，并录入 Cuven 的「网关接入令牌」字段。IPv4 客户端地址固定为 `10.66.0.2`。VPS 有原生 IPv6 出口时，可传入 `--ipv6`，并在客户端启用「网关支持 IPv6」。网关会在认证时声明双栈能力。当前网关支持一个已认证客户端。等待令牌验证的握手最多并行 8 个。网关在验证成功后才分配转发会话。另一台设备尝试连接时，已接入的设备可以继续传输；待验证名额已满时，新连接需要稍后重试。
+安装程序会构建网关、生成一个客户端接入令牌并启动 systemd 服务。接入令牌保存在 `/etc/cuven-gateway/token`，仅 root 可读。通过私有管理连接读取，并录入 Cuven 的「网关接入令牌」字段。IPv4 客户端地址固定为 `10.66.0.2`。VPS 有原生 IPv6 出口时，可传入 `--ipv6`，并在客户端启用「网关支持 IPv6」。网关会在认证时声明双栈能力。当前网关支持一个已认证客户端。等待令牌验证的握手最多并行 8 个。网关在验证成功后才分配转发会话。另一台设备尝试连接时，已接入的设备可以继续传输。待验证名额已满时，新连接需要稍后重试。
 
 两端均支持 Cuven IP v2 时，TLS 握手会协商 1500 字节的内层 MTU。较大的 IP 包可拆成多个外层 QUIC 数据报。新版客户端和网关将各自发送的外层 UDP 负载限制在 1200 字节，使已连接的会话能适应 IPv6 或 NAT64 路径降至 1280 字节的情况。较宽路径上发送相同数据可能需要更多数据报。已有部署应同时更新客户端和网关。任一端使用 v1 时沿用 1280 字节的内层 MTU，部分 HTTP/3 服务在此 MTU 下可能握手超时。
 
