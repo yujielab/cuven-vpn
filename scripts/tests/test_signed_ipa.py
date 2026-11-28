@@ -74,6 +74,26 @@ class SigningFields(unittest.TestCase):
                     *_, errors, _ = signing.checks("App", info, signed, profile, NOW)
                     self.assertTrue(any(key in error for error in errors))
 
+    def test_reused_explicit_profile_id_is_diagnosed_but_shared_wildcard_is_valid(self):
+        def target(_archive, _counts, root, _temp, _now):
+            tunnel = root.endswith(".appex")
+            bundle = "dev.cuven.vpn.tunnel" if tunnel else "dev.cuven.vpn"
+            info, signed, profile = fields(bundle)
+            if tunnel:
+                info["NSExtension"] = {"NSExtensionPointIdentifier": "com.apple.networkextension.packet-tunnel"}
+            profile["Entitlements"]["application-identifier"] = grant
+            return info, signed, profile, None
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(signing, "read_target", target):
+            ipa = pathlib.Path(tmp) / "profile.ipa"
+            with zipfile.ZipFile(ipa, "w") as archive:
+                archive.writestr("Payload/Cuven.app/Info.plist", b"")
+            for grant, expected in [(PREFIX + ".dev.cuven.vpn", 1), (PREFIX + ".*", 0)]:
+                with self.subTest(grant=grant), mock.patch("builtins.print") as report:
+                    self.assertEqual(signing.inspect(ipa), expected)
+                    reported = any("两个目标的描述文件都限定为同一个 App ID" in str(call) for call in report.call_args_list)
+                    self.assertEqual(reported, expected == 1)
+
     def test_signed_access_groups_are_arrays_of_concrete_names(self):
         for claims in (PREFIX + ".one", [""], ["$(AppIdentifierPrefix)one"], [PREFIX + ".*"], [1]):
             with self.subTest(claims=claims):

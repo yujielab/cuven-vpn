@@ -361,6 +361,10 @@ def inspect(path, device_udid=None):
             profiles.append((label, profile))
         problems.extend(device_problems(profiles, device_udid))
     app, tunnel = targets
+    app_grant, tunnel_grant = (profile["Entitlements"].get("application-identifier") for _, profile in profiles)
+    if (app[0] != tunnel[0] and isinstance(app_grant, str) and app_grant
+            and "*" not in app_grant and app_grant == tunnel_grant):
+        problems.append("两个目标的描述文件都限定为同一个 App ID。请在重签时按各自的 Bundle ID 分别匹配描述文件。")
     if not tunnel[0].startswith(app[0] + "."):
         problems.append("扩展 Bundle ID 必须以主 App 的 Bundle ID 和句点开头。")
     if app[1] != tunnel[1]:
