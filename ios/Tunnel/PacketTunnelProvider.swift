@@ -333,12 +333,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let engine = session.takeEngine()
         worker.async { engine?.stop() }
         if !session.routesInstalled {
+            let report = session.endpoints.recordStartupFailure(failure)
             if session.endpoints.retryStartupResolution(after: failure) {
                 resolve(session)
             } else if session.endpoints.hasUntriedAddress {
                 connect(session)
             } else {
-                terminate(session, failure: failure)
+                terminate(session, failure: report)
             }
             return
         }

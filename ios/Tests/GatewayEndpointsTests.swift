@@ -31,6 +31,31 @@ final class GatewayEndpointsTests: XCTestCase {
         XCTAssertEqual(endpoints.next(), "new")
     }
 
+    func testReachableGatewayDiagnosisSurvivesAnUnreachableFallback() {
+        for cause: TunnelFailure in [.certificateName, .certificateTime, .certificateTrust,
+                                     .gatewayRejected, .gatewayBusy, .gatewayIPv6] {
+            var endpoints = GatewayEndpoints()
+            XCTAssertEqual(endpoints.recordStartupFailure(.gatewayTimeout), .gatewayTimeout)
+            XCTAssertEqual(endpoints.recordStartupFailure(cause), cause)
+            XCTAssertEqual(endpoints.recordStartupFailure(.connection), cause)
+            XCTAssertEqual(endpoints.recordStartupFailure(.gatewayTimeout), cause)
+            XCTAssertEqual(endpoints.recordStartupFailure(.cancelled), .cancelled)
+            XCTAssertEqual(endpoints.recordStartupFailure(.settings), .settings)
+        }
+    }
+
+    func testStartupDiagnosisIsScopedToTheCurrentPathAndAddressList() {
+        var endpoints = GatewayEndpoints()
+        _ = endpoints.recordStartupFailure(.certificateTrust)
+        XCTAssertEqual(endpoints.recordStartupFailure(.gatewayRejected), .gatewayRejected)
+        XCTAssertEqual(endpoints.recordStartupFailure(.connection), .gatewayRejected)
+        endpoints.pathChanged()
+        XCTAssertEqual(endpoints.recordStartupFailure(.gatewayTimeout), .gatewayTimeout)
+        _ = endpoints.recordStartupFailure(.certificateName)
+        XCTAssertTrue(endpoints.retryStartupResolution(after: .connection))
+        XCTAssertEqual(endpoints.recordStartupFailure(.connection), .connection)
+    }
+
     func testLookupFailureAndRepeatedDNSAnswerKeepWorkingRotation() throws {
         var endpoints = GatewayEndpoints()
         XCTAssertNil(endpoints.next())
