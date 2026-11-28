@@ -6,7 +6,7 @@ Cuven IP 将 iPhone 或 iPad 的原始 IPv4、IPv6 包转发到自有 Linux 网�
 
 ## 在 iPhone 上连接
 
-客户端构建 `992d410` 使用 iOS 27.2 SDK。下载并解压构建产物，在 macOS 上运行 `shasum -a 256 -c Cuven-IP-27.2-unsigned.ipa.sha256` 核对原始 IPA，再为主 App 和隧道扩展签名后安装。已有 Cuven IP 网关可以继续使用。 [下载未签名 IPA](https://github.com/yujielab/cuven-vpn/actions/runs/46113850299/artifacts/15250848371) · [签名说明](#构建-ios-客户端)
+客户端构建 `34ec562` 使用 iOS 27.2 SDK。下载并解压构建产物，在 macOS 上运行 `shasum -a 256 -c Cuven-IP-27.2-unsigned.ipa.sha256` 核对原始 IPA，再为主 App 和隧道扩展签名后安装。已有 Cuven IP 网关可以继续使用。 [下载未签名 IPA](https://github.com/yujielab/cuven-vpn/actions/runs/46116706823/artifacts/15251309973) · [签名说明](#构建-ios-客户端)
 
 1. 准备自有 VPS 的网关地址和接入令牌。首次部署请先在 VPS 上安装网关。 [网关安装](#一键部署-linux-网关)
 2. 打开 Cuven，点「设置服务器」，填写「服务器地址」和「网关接入令牌」。网关使用自定义端口时，展开「高级服务器设置」修改默认的 UDP 4433。通过 IP 连接且证书签给域名时，在此填写「TLS 证书域名」。
@@ -146,7 +146,7 @@ macOS 使用系统自带的 `codesign`、`security` 和 OpenSSL。Linux 使用�
 
 ## 验证
 
-构建 `992d410` 在 iOS 27.2 的 iPhone Duo 和 iPhone 17 模拟器上各通过 57 项测试，覆盖首页与设置页切换、屏幕旋转和 App 钥匙串读写。 [CI 测试记录](https://github.com/yujielab/cuven-vpn/actions/runs/46113850190)
+构建 `34ec562` 在 iOS 27.2 的 iPhone Duo 和 iPhone 17 模拟器上各通过 71 项测试，覆盖重连策略、IPv6 离线预览、WebKit 经自有 HTTPS 代理载入测试网站、屏幕旋转和 App 钥匙串。 [CI 测试记录](https://github.com/yujielab/cuven-vpn/actions/runs/46116706563)
 
 ```sh
 cd core
