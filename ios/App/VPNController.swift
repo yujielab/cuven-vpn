@@ -52,6 +52,29 @@ final class VPNController: ObservableObject {
             (hasCredential || hasNewCredential)
     }
 
+    var hasSavedGateway: Bool { savedProfile?.transport == .cuven }
+
+    var shouldReviewBeforeConnecting: Bool {
+        guard canEdit else { return false }
+        guard hasSavedGateway, hasCredential, !hasNewCredential else { return true }
+        return (try? draftProfile()) != savedProfile
+    }
+
+    var reviewTitle: String {
+        if !hasSavedGateway {
+            return host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hasNewCredential ? "设置服务器" : "继续设置"
+        }
+        if credentialAwaitsUnlock { return "查看凭据设置" }
+        if !hasCredential && !hasNewCredential { return "输入接入令牌" }
+        return "核对连接设置"
+    }
+
+    var showsConnectedPrivacyPolicy: Bool {
+        guard status == .connected, let profile = savedProfile, profile.transport == .cuven,
+              let configuration = manager?.protocolConfiguration as? NETunnelProviderProtocol else { return false }
+        return profile.usesFullRouting && profile.requiresEncryptedDNS && configuration.hasRequiredRouting(for: profile)
+    }
+
     var canStartOnce: Bool {
         offersOneTimeStart && canStart && hasNewCredential && !hasCredential && autoConnect == .off
     }
@@ -164,7 +187,7 @@ final class VPNController: ObservableObject {
         let previous = status
         let next = manager?.connection.status ?? .invalid
         status = next
-        if next != .connected { rtt = TunnelRTTMeasurement() }
+        if next != .connected { clearTunnelRTT() }
         switch next {
         case .connecting, .reasserting:
             pendingDisconnectReport = nil
@@ -201,6 +224,10 @@ final class VPNController: ObservableObject {
         }
     }
 
+    func clearTunnelRTT() {
+        rtt = TunnelRTTMeasurement()
+    }
+
     func refreshTunnelRTT() {
         guard status == .connected, let session = manager?.connection as? NETunnelProviderSession else { return }
         let request = rtt.begin()
@@ -217,8 +244,9 @@ final class VPNController: ObservableObject {
         }
     }
 
-    func save(connect: Bool, once: Bool = false) async {
-        guard canStart, let manager, !once || (connect && canStartOnce) else { return }
+    @discardableResult
+    func save(connect: Bool, once: Bool = false) async -> Bool {
+        guard canStart, let manager, !once || (connect && canStartOnce) else { return false }
         busy = true
         pendingDisconnectReport = nil
         error = nil
@@ -267,10 +295,11 @@ final class VPNController: ObservableObject {
                     refreshStatus()
                 }
             }
+            return true
         } catch {
             refreshStatus()
             pendingDisconnectReport = nil
-            if await recoverPreferenceConflict(error) { return }
+            if await recoverPreferenceConflict(error) { return false }
             if let failure = error as? CredentialError {
                 switch failure {
                 case .appKeychain(errSecMissingEntitlement): offersOneTimeStart = true
@@ -278,6 +307,7 @@ final class VPNController: ObservableObject {
                 }
             }
             self.error = error.localizedDescription
+            return false
         }
     }
 

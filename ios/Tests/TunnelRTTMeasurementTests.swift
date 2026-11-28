@@ -14,6 +14,19 @@ final class TunnelRTTMeasurementTests: XCTestCase {
         XCTAssertEqual(sample.milliseconds, 20)
     }
 
+    func testClearingForBackgroundDropsLastValueAndPendingReply() {
+        var sample = TunnelRTTMeasurement()
+        let measured = sample.begin()
+        sample.finish(measured, reply: Data("12".utf8))
+        let pending = sample.begin()
+        sample = TunnelRTTMeasurement()
+        sample.finish(pending, reply: Data("98".utf8))
+        XCTAssertNil(sample.milliseconds)
+        let resumed = sample.begin()
+        sample.finish(resumed, reply: Data("17".utf8))
+        XCTAssertEqual(sample.milliseconds, 17)
+    }
+
     func testUnansweredPollExpiresAndNextValidSampleRecovers() {
         var sample = TunnelRTTMeasurement()
         let first = sample.begin()

@@ -13,6 +13,7 @@ struct CuvenApp: App {
 
 private struct ConnectionView: View {
     @StateObject private var vpn = VPNController()
+    @State private var showingSettings = false
     @Environment(\.scenePhase) private var scenePhase
 
     private let accent = Color(red: 0.05, green: 0.48, blue: 0.41)
@@ -24,21 +25,28 @@ private struct ConnectionView: View {
                     VStack(spacing: 12) {
                         Image(systemName: statusIcon)
                             .font(.system(size: 39, weight: .semibold))
-                            .foregroundStyle(accent)
+                            .foregroundStyle(vpn.status == .connected ? accent : Color.secondary)
                             .frame(width: 84, height: 84)
-                            .background(accent.opacity(0.12), in: Circle())
+                            .background((vpn.status == .connected ? accent : Color.secondary).opacity(0.12), in: Circle())
                             .accessibilityHidden(true)
                         Text(statusTitle)
                             .font(.title2.bold())
-                        Text(VPNTransport.cuven.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        if !vpn.host.isEmpty {
-                            Text(vpn.host)
-                                .font(.subheadline.monospaced())
+                        if vpn.showsConnectedPrivacyPolicy {
+                            LabeledContent("连接策略", value: "全隧道 · 加密 DNS")
+                                .font(.subheadline)
+                        } else if vpn.canEdit && !vpn.hasSavedGateway {
+                            Text("添加自有 VPS 的地址和接入令牌。")
+                                .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                                .textSelection(.enabled)
+                        } else if vpn.status == .reasserting {
+                            Text("正在重新验证网关连接。")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        if vpn.autoConnectPaused && vpn.canEdit {
+                            Text("自动连接已暂停")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
                         }
                         if let rtt = vpn.tunnelRTT {
                             Text(rtt == 0 ? "到网关不足 1 ms" : "到网关 \(rtt) ms")
@@ -66,100 +74,80 @@ private struct ConnectionView: View {
                     }
                 }
 
-                Section("服务器") {
-                    TextField("服务器地址", text: $vpn.host)
-                        .textContentType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .accessibilityLabel("服务器地址")
-
-                    TextField("端口", text: $vpn.port)
-                        .keyboardType(.numberPad)
-                        .accessibilityLabel("端口")
-
-                    TextField("TLS 证书域名（可选）", text: $vpn.serverName)
-                        .cuvenPlainInput()
-                        .keyboardType(.URL)
-                    SecureField(vpn.hasCredential ? "令牌已保存，输入以替换" : "网关接入令牌", text: $vpn.credential)
-                        .cuvenSecureInput()
-                        .accessibilityLabel("Cuven IP 接入令牌")
-                    if vpn.credentialAwaitsUnlock {
-                        Text("钥匙串暂时不可访问。解锁设备后，Cuven 会重新读取已保存的令牌。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    if vpn.offersOneTimeStart && !vpn.hasCredential && vpn.autoConnect == .off {
-                        Text("可仅为本次连接使用令牌。下次从 Cuven 连接时需要重新输入。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        Button("仅本次连接，不保存令牌") {
-                            Task { await vpn.save(connect: true, once: true) }
+                if !vpn.shouldReviewBeforeConnecting {
+                    Section {
+                        Button {
+                            showingSettings = true
+                        } label: {
+                            Label("连接设置", systemImage: "slider.horizontal.3")
                         }
-                        .disabled(!vpn.canStartOnce)
-                    } else if vpn.requiresAppStart {
-                        Text("此配置使用 App 启动凭据，请从 Cuven 内手动连接。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    Toggle("网关支持 IPv6", isOn: $vpn.enableIPv6)
-                }
-                .disabled(!vpn.canEdit)
-
-                Section {
-                    NavigationLink {
-                        NetworkSettingsView(vpn: vpn)
-                    } label: {
-                        Label("连接设置", systemImage: "slider.horizontal.3")
-                    }
-                    .accessibilityIdentifier("connection-settings")
-                    if vpn.canSave {
-                        Button(vpn.autoConnectPaused && vpn.autoConnect != .off ? "保存并恢复自动连接" : "保存设置") {
-                            Task { await vpn.save(connect: false) }
-                        }
+                        .accessibilityIdentifier("connection-settings")
                     }
                 }
             }
             .navigationTitle("Cuven")
+            .navigationDestination(isPresented: $showingSettings) {
+                NetworkSettingsView(vpn: vpn)
+            }
             .scrollDismissesKeyboard(.interactively)
-            .tint(accent)
-            .task { await vpn.load() }
-            .task(id: vpn.status) {
-                guard vpn.status == .connected else { return }
-                while !Task.isCancelled {
-                    vpn.refreshTunnelRTT()
-                    try? await Task.sleep(for: .seconds(5))
-                }
+        }
+        .tint(accent)
+        .task { await vpn.load() }
+        .task(id: scenePhase == .active && vpn.status == .connected) {
+            guard scenePhase == .active, vpn.status == .connected else { return }
+            while !Task.isCancelled {
+                vpn.refreshTunnelRTT()
+                try? await Task.sleep(for: .seconds(5))
             }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active {
-                    vpn.retryCredentialAfterUnlock()
-                    vpn.refreshStatus()
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
                 vpn.retryCredentialAfterUnlock()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .NEVPNStatusDidChange)) { _ in
                 vpn.refreshStatus()
+            } else {
+                vpn.clearTunnelRTT()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+            vpn.retryCredentialAfterUnlock()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NEVPNStatusDidChange)) { _ in
+            vpn.refreshStatus()
+        }
+        .accessibilityHidden(scenePhase != .active)
+        .overlay {
+            if scenePhase != .active {
+                ZStack {
+                    Color(uiColor: .systemBackground).ignoresSafeArea()
+                    Label("Cuven", systemImage: "lock.shield")
+                        .font(.title2.weight(.semibold))
+                }
             }
         }
     }
 
     @ViewBuilder
     private var mainButton: some View {
-        if !vpn.loaded && !vpn.busy {
-            Button("重新读取配置") { Task { await vpn.load() } }
-        } else if vpn.canStop {
+        if !vpn.loaded {
+            if vpn.error != nil && !vpn.busy {
+                Button("重新读取配置") { Task { await vpn.load() } }
+            }
+        } else if [.connecting, .connected, .reasserting].contains(vpn.status) {
             Button("断开连接", role: .destructive) { Task { await vpn.disconnect() } }
-        } else {
-            Button("连接 VPN") { Task { await vpn.save(connect: true) } }
-                .disabled(!vpn.canStart)
+                .disabled(!vpn.canStop)
+        } else if vpn.shouldReviewBeforeConnecting {
+            Button(vpn.reviewTitle) { showingSettings = true }
+                .accessibilityIdentifier("connection-settings")
+        } else if vpn.status != .disconnecting {
+            Button(vpn.autoConnectPaused && vpn.autoConnect != .off ? "连接并恢复自动连接" : "连接 VPN") {
+                Task { await vpn.save(connect: true) }
+            }
+            .disabled(!vpn.canStart)
         }
     }
 
     private var statusTitle: String {
-        if !vpn.loaded { return "读取 VPN 配置" }
+        if !vpn.loaded { return vpn.error == nil ? "正在读取配置" : "无法读取配置" }
         switch vpn.status {
         case .invalid, .disconnected: return "未连接"
         case .connecting: return "正在连接"
@@ -181,9 +169,64 @@ private struct ConnectionView: View {
 
 private struct NetworkSettingsView: View {
     @ObservedObject var vpn: VPNController
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var showingSaveError = false
+
+    private func submit(connect: Bool, once: Bool = false) {
+        Task {
+            if await vpn.save(connect: connect, once: once) {
+                dismiss()
+            } else if vpn.error != nil {
+                showingSaveError = true
+            }
+        }
+    }
 
     var body: some View {
         Form {
+            Section("服务器") {
+                TextField("服务器地址", text: $vpn.host)
+                    .textContentType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .accessibilityLabel("服务器地址")
+
+                SecureField(vpn.hasCredential ? "令牌已保存，输入以替换" : "网关接入令牌", text: $vpn.credential)
+                    .cuvenSecureInput()
+                    .accessibilityLabel("Cuven IP 接入令牌")
+                if vpn.credentialAwaitsUnlock {
+                    Text("钥匙串暂时不可访问。解锁设备后，Cuven 会重新读取已保存的令牌。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if vpn.offersOneTimeStart && !vpn.hasCredential && vpn.autoConnect == .off {
+                    Text("可仅为本次连接使用令牌。下次从 Cuven 连接时需要重新输入。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("仅本次连接，不保存令牌") {
+                        submit(connect: true, once: true)
+                    }
+                    .disabled(!vpn.canStartOnce)
+                } else if vpn.requiresAppStart {
+                    Text("此配置使用 App 启动凭据，请从 Cuven 内手动连接。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                DisclosureGroup("高级服务器设置") {
+                    TextField("端口", text: $vpn.port)
+                        .keyboardType(.numberPad)
+                        .accessibilityLabel("端口")
+
+                    TextField("TLS 证书域名（可选）", text: $vpn.serverName)
+                        .cuvenPlainInput()
+                        .keyboardType(.URL)
+                    Toggle("网关支持 IPv6", isOn: $vpn.enableIPv6)
+                }
+            }
+            .disabled(!vpn.canEdit)
+
             Section {
                 Picker("自动连接", selection: $vpn.autoConnect) {
                     ForEach(AutoConnect.allCases) { mode in Text(mode.title).tag(mode) }
@@ -247,21 +290,27 @@ private struct NetworkSettingsView: View {
             }
             .disabled(!vpn.canEdit)
 
-            if let error = vpn.error {
-                Section {
-                    Label(error, systemImage: "exclamationmark.circle")
-                        .foregroundStyle(.red)
-                        .accessibilityAddTraits(.updatesFrequently)
-                }
-            }
-
             if vpn.canSave {
                 Button(vpn.autoConnectPaused && vpn.autoConnect != .off ? "保存并恢复自动连接" : "保存设置") {
-                    Task { await vpn.save(connect: false) }
+                    submit(connect: false)
                 }
             }
         }
         .navigationTitle("连接设置")
+        .alert("未能应用连接设置", isPresented: $showingSaveError) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(vpn.error ?? "请核对设置后重试。")
+        }
+        .toolbar {
+            if vpn.canEdit {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("连接") { submit(connect: true) }
+                        .disabled(!vpn.canStart)
+                        .accessibilityIdentifier("connect-from-settings")
+                }
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
         .scrollDismissesKeyboard(.interactively)
     }
