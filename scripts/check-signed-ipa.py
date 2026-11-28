@@ -281,6 +281,20 @@ def checks(label, info, signed, profile, now):
         errors.append("可执行文件签名和描述文件需要同时授权 packet-tunnel-provider。")
     elif any(not permits(granted, provider) for provider in requested):
         errors.append("签名还声明了描述文件未授权的 Network Extension 类型。")
+    if info.get("CuvenCredentialStorageVersion") == 2:
+        groups = set()
+        for field in ("keychain-access-groups", "com.apple.security.application-groups"):
+            for item in values(signed, field):
+                if not item or "*" in item or "$(" in item:
+                    shared.append("签入的访问组需要是具体名称。")
+                elif not permits(values(allowed, field), item):
+                    shared.append("描述文件未授权签入的访问组。")
+                else:
+                    groups.add(item)
+        if claim == prefix + "." + bundle and isinstance(profile_id, str) and permits([profile_id], claim):
+            groups.add(claim)
+        return bundle, team, groups, errors, shared
+    # Older clients still select their shared group via the bundled plist.
     setting = info.get("CuvenKeychainAccessGroup")
     group = None
     if isinstance(setting, str):
@@ -293,7 +307,7 @@ def checks(label, info, signed, profile, now):
         shared.append(f"可执行文件未签入具体共享组 {group}。")
     elif not permits(values(allowed, "keychain-access-groups"), group):
         shared.append(f"描述文件未授权共享组 {group}。")
-    return bundle, team, group, errors, shared
+    return bundle, team, {group} if group else set(), errors, shared
 
 
 def device_problems(profiles, device_udid=None):
@@ -349,8 +363,8 @@ def inspect(path, device_udid=None):
         problems.append("扩展 Bundle ID 必须以主 App 的 Bundle ID 和句点开头。")
     if app[1] != tunnel[1]:
         problems.append("主 App 和扩展的签名团队不同。")
-    if app[2] != tunnel[2]:
-        shared_problems.append("主 App 和扩展配置的共享组不同。")
+    if not app[2].intersection(tunnel[2]):
+        shared_problems.append("两个目标缺少共同授权的具体钥匙串访问组。")
     for message in problems + shared_problems:
         print("• " + message)
     if problems:

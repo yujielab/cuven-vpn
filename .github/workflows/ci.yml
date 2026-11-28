@@ -177,7 +177,6 @@ jobs:
           )
           outcomes = [label for label in (
               "Cuven app keychain round trip", "Cuven app keychain entitlement denied",
-              "Cuven app keychain group unconfirmed",
           ) if label in activities]
           if len(outcomes) != 1:
               raise SystemExit("Could not identify the system keychain result in the test activity")

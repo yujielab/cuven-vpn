@@ -3,31 +3,6 @@ import XCTest
 @testable import Cuven
 
 final class VPNProfileTests: XCTestCase {
-    func testKeychainGroupUsesCurrentSigningPrefixForRepackagedIPA() {
-        let group = "dev.cuven.vpn.shared"
-        let defaultGroup = "ABCDE12345.dev.cuven.vpn"
-        XCTAssertNil(KeychainAccessGroup.resolve(group))
-        XCTAssertEqual(KeychainAccessGroup.resolve(group, defaultGroup: defaultGroup), "ABCDE12345." + group)
-        XCTAssertEqual(
-            KeychainAccessGroup.resolve("$(AppIdentifierPrefix)" + group, defaultGroup: defaultGroup),
-            "ABCDE12345." + group
-        )
-        XCTAssertEqual(KeychainAccessGroup.resolve("ABCDE12345." + group), "ABCDE12345." + group)
-        XCTAssertEqual(
-            KeychainAccessGroup.resolve("ZYXWV98765." + group, defaultGroup: defaultGroup), "ABCDE12345." + group
-        )
-        XCTAssertNil(KeychainAccessGroup.resolve(group, defaultGroup: "dev.cuven.vpn"))
-    }
-
-    func testApplicationDefaultGroupMustBelongToInstalledBundle() {
-        let app = "dev.cuven.vpn"
-        XCTAssertTrue(KeychainAccessGroup.isApplicationGroup("TEST123456." + app, bundleID: app))
-        for group in ["TEST123456.*", "TEST123456.other.product", "TEST123456.dev.cuven.vpn.shared", "com.apple.token"] {
-            XCTAssertFalse(KeychainAccessGroup.isApplicationGroup(group, bundleID: app))
-        }
-        XCTAssertFalse(KeychainAccessGroup.isApplicationGroup(nil, bundleID: app))
-    }
-
     func testManualAppStartRequiresMatchingReferenceAndValidToken() throws {
         let reference = Data([1, 2, 3])
         let token = String(Data(repeating: 1, count: 32).base64EncodedString().dropLast())

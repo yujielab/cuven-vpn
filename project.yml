@@ -31,7 +31,7 @@ targets:
         CFBundleDisplayName: Cuven
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        CuvenKeychainAccessGroup: $(AppIdentifierPrefix)dev.cuven.vpn.shared
+        CuvenCredentialStorageVersion: 2
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -47,8 +47,6 @@ targets:
       properties:
         com.apple.developer.networking.networkextension:
           - packet-tunnel-provider
-        keychain-access-groups:
-          - $(AppIdentifierPrefix)dev.cuven.vpn.shared
     dependencies:
       - target: CuvenTunnel
         embed: true
@@ -72,7 +70,7 @@ targets:
         CFBundleDisplayName: Cuven Tunnel
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        CuvenKeychainAccessGroup: $(AppIdentifierPrefix)dev.cuven.vpn.shared
+        CuvenCredentialStorageVersion: 2
         NSExtension:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
@@ -81,8 +79,6 @@ targets:
       properties:
         com.apple.developer.networking.networkextension:
           - packet-tunnel-provider
-        keychain-access-groups:
-          - $(AppIdentifierPrefix)dev.cuven.vpn.shared
     dependencies:
       - framework: Vendor/CuvenCore.xcframework
         embed: false

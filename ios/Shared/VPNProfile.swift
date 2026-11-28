@@ -15,9 +15,6 @@ enum TunnelConfiguration {
     static let maximumMTU = 1500
     static let rttRequest = Data("cuven.rtt-ms".utf8)
 
-    static var keychainAccessGroup: String {
-        Bundle.main.object(forInfoDictionaryKey: "CuvenKeychainAccessGroup") as? String ?? ""
-    }
 }
 
 struct VPNProfile: Codable, Sendable, Equatable {

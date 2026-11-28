@@ -87,7 +87,7 @@ final class VPNController: ObservableObject {
     /// Returns whether the saved configuration still matches the form's base.
     /// Only an unchanged base can keep an unsubmitted token and draft together.
     private func readSystemConfiguration() async throws -> Bool {
-        let providerID = try Self.embeddedProviderID()
+        let providerID = try Self.embeddedProvider().id
         let previousHadConfiguration = manager?.protocolConfiguration != nil
         let managers = try await NETunnelProviderManager.loadAllFromPreferences()
         let existing = managers.first {
@@ -220,7 +220,8 @@ final class VPNController: ObservableObject {
             let profile = try draftProfile()
             let sessionToken = once ? credential.trimmingCharacters(in: .whitespacesAndNewlines) : nil
             if let sessionToken { try VPNProfile.validateAccessToken(sessionToken) }
-            if profile != savedProfile || hasNewCredential || autoConnectPaused || !manager.isEnabled || routingNeedsRepair {
+            if profile != savedProfile || hasNewCredential || autoConnectPaused || !manager.isEnabled ||
+                routingNeedsRepair || credentialBindingChanged(for: profile) {
                 try await persist(profile, manager: manager, once: once)
             }
             guard !routingNeedsRepair else { throw TunnelFailure.strictRouting }
@@ -228,7 +229,7 @@ final class VPNController: ObservableObject {
             if connect && (status == .invalid || status == .disconnected) {
                 if requiresAppStart {
                     guard let configuration = manager.protocolConfiguration as? NETunnelProviderProtocol,
-                          configuration.providerBundleIdentifier == (try Self.embeddedProviderID()),
+                          configuration.providerBundleIdentifier == (try Self.embeddedProvider().id),
                           configuration.providerConfiguration?[AppCredentialHandoff.modeKey] as? Bool == true,
                           profile.autoConnect == .off, !manager.isOnDemandEnabled
                     else { throw CredentialError.missing }
@@ -262,7 +263,7 @@ final class VPNController: ObservableObject {
             if await recoverPreferenceConflict(error) { return }
             if let failure = error as? CredentialError {
                 switch failure {
-                case .appKeychain(errSecMissingEntitlement), .unexpectedDefaultGroup: offersOneTimeStart = true
+                case .appKeychain(errSecMissingEntitlement): offersOneTimeStart = true
                 default: break
                 }
             }
@@ -294,8 +295,21 @@ final class VPNController: ObservableObject {
         refreshStatus()
     }
 
+    private static let sharedCredentialGroups: [String] = {
+        guard let provider = try? embeddedProvider() else { return [] }
+        return KeychainAccessGroup.shared(between: .main, and: provider.bundle)
+    }()
+
+    private func credentialBindingChanged(for profile: VPNProfile) -> Bool {
+        guard hasCredential, let reference = credentialReference else { return false }
+        let shared = KeychainCredential.isShared(reference, with: Self.sharedCredentialGroups)
+        if profile.autoConnect != .off { return requiresAppStart || !shared }
+        return requiresAppStart == shared
+    }
+
     private func persist(_ profile: VPNProfile, manager: NETunnelProviderManager, once: Bool) async throws {
-        let providerID = try Self.embeddedProviderID()
+        let providerID = try Self.embeddedProvider().id
+        let sharedGroups = Self.sharedCredentialGroups
         let profileData = try JSONEncoder().encode(profile)
         let previous = manager.protocolConfiguration as? NETunnelProviderProtocol
         let previousReference = credentialReference
@@ -304,7 +318,8 @@ final class VPNController: ObservableObject {
         if once {
             reference = nil
             appStart = true
-        } else if hasNewCredential || (appStart && profile.autoConnect != .off) {
+        } else if hasNewCredential || (profile.autoConnect != .off &&
+                    (appStart || previousReference.map { !KeychainCredential.isShared($0, with: sharedGroups) } == true)) {
             let token: String
             if hasNewCredential {
                 token = credential.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -314,21 +329,19 @@ final class VPNController: ObservableObject {
                 throw CredentialError.missing
             }
             try VPNProfile.validateAccessToken(token)
-            do {
-                reference = try KeychainCredential.store(token)
+            if profile.autoConnect == .off {
+                let saved = try KeychainCredential.storeForApp(token)
+                reference = saved
+                appStart = !KeychainCredential.isShared(saved, with: sharedGroups)
+            } else {
+                reference = try KeychainCredential.storeShared(token, groups: sharedGroups)
                 appStart = false
-            } catch let failure as CredentialError where failure.sharedGroupUnavailable {
-                guard profile.autoConnect == .off else {
-                    if case .unresolvedSharedGroup = failure { throw failure }
-                    throw CredentialError.sharedRequired
-                }
-                reference = try KeychainCredential.storeForApp(token)
-                appStart = true
             }
         } else if hasCredential, let previousReference {
             let token = try KeychainCredential.load(reference: previousReference)
             try VPNProfile.validateAccessToken(token)
             reference = previousReference
+            if profile.autoConnect == .off { appStart = !KeychainCredential.isShared(previousReference, with: sharedGroups) }
         } else {
             throw CredentialError.missing
         }
@@ -388,7 +401,7 @@ final class VPNController: ObservableObject {
         guard preferencesNeedReload else { return }
         try await manager.loadFromPreferences()
         let configuration = manager.protocolConfiguration as? NETunnelProviderProtocol
-        guard let configuration, configuration.providerBundleIdentifier == (try Self.embeddedProviderID()),
+        guard let configuration, configuration.providerBundleIdentifier == (try Self.embeddedProvider().id),
               SavedTunnelProfile(configuration: configuration) == stored else {
             throw NSError(domain: NEVPNErrorDomain, code: NEVPNError.configurationStale.rawValue)
         }
@@ -409,14 +422,14 @@ final class VPNController: ObservableObject {
         return [connect, disconnect]
     }
 
-    private static func embeddedProviderID() throws -> String {
+    private static func embeddedProvider() throws -> (id: String, bundle: Bundle) {
         guard let plugins = Bundle.main.builtInPlugInsURL, let appID = Bundle.main.bundleIdentifier,
               let provider = Bundle(url: plugins.appendingPathComponent("CuvenTunnel.appex")),
               let identifier = provider.bundleIdentifier, identifier.hasPrefix(appID + "."),
               let settings = provider.object(forInfoDictionaryKey: "NSExtension") as? [String: Any],
               settings["NSExtensionPointIdentifier"] as? String == "com.apple.networkextension.packet-tunnel"
         else { throw CredentialError.providerMissing }
-        return identifier
+        return (identifier, provider)
     }
 
     private func draftProfile() throws -> VPNProfile {

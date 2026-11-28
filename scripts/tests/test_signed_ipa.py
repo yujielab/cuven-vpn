@@ -48,6 +48,21 @@ class SigningFields(unittest.TestCase):
         *_, errors, shared = signing.checks("App", info, signed, profile, NOW)
         self.assertEqual((errors, shared), ([], []))
 
+    def test_signer_selects_custom_shared_group_without_plist_override(self):
+        custom = PREFIX + ".vendor.chosen-by-signer"
+        app, tunnel = [], []
+        for bundle, selected in (("com.fixture.app", app), ("com.fixture.app.tunnel", tunnel)):
+            info, signed, profile = fields(bundle)
+            info.pop("CuvenKeychainAccessGroup")
+            info["CuvenCredentialStorageVersion"] = 2
+            identity = signed["application-identifier"]
+            signed["keychain-access-groups"] = [identity, custom]
+            profile["Entitlements"]["keychain-access-groups"] = [PREFIX + ".*"]
+            _, _, groups, errors, shared = signing.checks(bundle, info, signed, profile, NOW)
+            self.assertEqual((errors, shared), ([], []))
+            selected.extend(groups)
+        self.assertEqual(set(app).intersection(tunnel), {custom})
+
     def test_signed_wildcard_is_not_a_specific_shared_group(self):
         info, signed, profile = fields()
         signed["keychain-access-groups"] = [PREFIX + ".*"]

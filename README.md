@@ -85,7 +85,7 @@ xcodegen generate
 open Cuven.xcodeproj
 ```
 
-用同一 Apple Developer 团队签名 `dev.cuven.vpn` 和 `dev.cuven.vpn.tunnel`，两者都应保留 Packet Tunnel 能力和同一个共享钥匙串组 `<App ID 前缀>.dev.cuven.vpn.shared`。出现 `-34018` 时，核对安装包中两个目标的签名授权。更换签名团队后可能需要重新录入令牌。 [Apple 钥匙串错误说明](https://developer.apple.com/documentation/security/errsecmissingentitlement)
+用同一 Apple Developer 团队为主 App 和嵌入的隧道扩展签名，两个目标均需要 Packet Tunnel 授权。手动保存令牌时，由 iOS 按主 App 的实际签名选择钥匙串访问组。按需连接需要在两个目标的签名中声明同一个由各自描述文件授权的具体组名，可由签名者选择。重签若改变了钥匙串授权，可能需要重新输入令牌。 [Apple 钥匙串错误说明](https://developer.apple.com/documentation/security/errsecmissingentitlement)
 
 重签后可以在安装前检查两个目标的授权字段：
 

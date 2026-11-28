@@ -78,7 +78,7 @@ final class SimulatorKeychainTests: XCTestCase {
         guard status == errSecSuccess || status == errSecMissingEntitlement else {
             return XCTFail("Unexpected system keychain probe status \(status)")
         }
-        if status == errSecSuccess && KeychainAccessGroup.isApplicationGroup(group, bundleID: Bundle.main.bundleIdentifier) {
+        if status == errSecSuccess {
             try XCTContext.runActivity(named: "Cuven app keychain round trip") { _ in
                 let reference = try KeychainCredential.storeForApp(fixture)
                 let lookup: [String: Any] = [
@@ -99,16 +99,13 @@ final class SimulatorKeychainTests: XCTestCase {
                                kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
             }
         } else {
-            let label = status == errSecMissingEntitlement ? "Cuven app keychain entitlement denied" : "Cuven app keychain group unconfirmed"
-            XCTContext.runActivity(named: label) { _ in
+            XCTContext.runActivity(named: "Cuven app keychain entitlement denied") { _ in
                 do {
                     let reference = try KeychainCredential.storeForApp(fixture)
                     KeychainCredential.remove(reference: reference)
-                    XCTFail("Stored a test credential without a confirmed app-scoped group")
+                    XCTFail("Expected iOS to reject the write")
                 } catch CredentialError.appKeychain(errSecMissingEntitlement) {
                     XCTAssertEqual(status, errSecMissingEntitlement)
-                } catch CredentialError.unexpectedDefaultGroup {
-                    XCTAssertEqual(status, errSecSuccess)
                 } catch {
                     XCTFail("Unexpected app keychain error")
                 }
