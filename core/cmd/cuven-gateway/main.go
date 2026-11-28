@@ -33,10 +33,17 @@ func main() {
 	tokenPath := flag.String("token-file", "", "file containing the client's enrollment token")
 	modelPath := flag.String("model-file", "", "optional local link health model")
 	dual := flag.Bool("ipv6", false, "forward IPv6 for the enrolled client")
+	checkToken := flag.Bool("check-token", false, "validate the enrollment token file without starting the gateway")
 	checkTLS := flag.Bool("check-tls", false, "check the configured TLS identity and exit")
 	checkListen := flag.Bool("check-listen", false, "test binding the configured UDP address and exit")
 	name := flag.String("tls-name", "", "client's expected gateway name or IP address for -check-tls")
 	flag.Parse()
+	if *checkToken {
+		if _, err := readTokenFile(*tokenPath); err != nil {
+			log.Fatalf("无法使用接入令牌文件 %s，请核对权限或恢复原令牌: %v", *tokenPath, err)
+		}
+		return
+	}
 	if *checkListen {
 		socket, err := net.ListenPacket("udp", *listen)
 		if err != nil {
@@ -90,6 +97,19 @@ func checkTLSIdentity(certFile, keyFile, name string) error {
 	return nil
 }
 
+func readTokenFile(path string) (iptunnel.Token, error) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 128 || info.Mode().Perm()&0077 != 0 {
+		return iptunnel.Token{}, fmt.Errorf("gateway requires a private regular token file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return iptunnel.Token{}, err
+	}
+	defer clear(data)
+	return iptunnel.ParseToken(strings.TrimSpace(string(data)))
+}
+
 func run(ctx context.Context, listen, cert, key, tokenPath, modelPath string, dual bool) error {
 	var model *linkhealth.Model
 	if modelPath != "" {
@@ -99,16 +119,7 @@ func run(ctx context.Context, listen, cert, key, tokenPath, modelPath string, du
 			return fmt.Errorf("load link health model: %w", err)
 		}
 	}
-	info, err := os.Stat(tokenPath)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 128 || info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("gateway requires a private regular token file")
-	}
-	data, err := os.ReadFile(tokenPath)
-	if err != nil {
-		return err
-	}
-	token, err := iptunnel.ParseToken(strings.TrimSpace(string(data)))
-	clear(data)
+	token, err := readTokenFile(tokenPath)
 	if err != nil {
 		return err
 	}

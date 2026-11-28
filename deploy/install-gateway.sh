@@ -80,10 +80,8 @@ if [[ ( -e "$unit" || -L "$unit" ) && ! -f "$state/install-version" ]]; then
 fi
 
 if [[ -f "$state/install-version" ]]; then
-    bash "$rollback" restore
-    bash "$repo/deploy/upgrade-gateway.sh" --recover
-    [[ -f "$state/token" && -s "$state/token" ]] ||
-        fail '未找到原接入令牌或文件为空，请先恢复 /etc/cuven-gateway/token。'
+    source "$repo/deploy/gateway-preflight.sh"
+    recover_gateway_installation
 fi
 
 binary="$repo/bin/cuven-gateway-$(uname -m)"
@@ -264,7 +262,7 @@ fi
 bash "$repo/deploy/install-certbot-hook.sh" "$cert" "$key"
 install -d -m 0700 "$destination"
 updates=$(mktemp -d "$destination/.install.XXXXXXXX")
-if [[ ! -e "$destination/token" ]]; then
+if [[ "$destination" != "$state" ]]; then
     openssl rand -base64 32 | tr '+/' '-_' | tr -d '=' >"$staging/token"
     install -m 0600 "$staging/token" "$updates/token"
 fi
@@ -279,6 +277,7 @@ install -m 0644 "$staging/cuven-gateway.service" "$unit_tmp"
 
 # Publish the private rollback record before the first live replacement.
 if [[ "$destination" == "$state" ]]; then
+    gateway_check -check-token -token-file "$state/token"
     reconfiguring=true
     bash "$rollback" save "$updates/previous" "$staging/forwarding.conf"
 fi

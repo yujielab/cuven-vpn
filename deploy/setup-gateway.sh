@@ -46,8 +46,8 @@ printf '%s\n' 'Cuven IP 网关安装与启动'
 if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
     exec 9>/run/lock/cuven-gateway-install.lock
     flock -n 9 || fail '另一个网关安装进程正在运行。'
-    bash "$installer_dir/gateway-config-rollback.sh" restore
-    bash "$installer_dir/upgrade-gateway.sh" --recover
+    source "$installer_dir/gateway-preflight.sh"
+    recover_gateway_installation
     unit=/etc/systemd/system/cuven-gateway.service
     current_cert=$(sed -n 's/^LoadCredential=certificate://p' "$unit")
     current_key=$(sed -n 's/^LoadCredential=private-key://p' "$unit")
@@ -68,13 +68,7 @@ if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
         IFS= read -r domain </etc/cuven-gateway/gateway-name
         [[ -n "$domain" ]] || fail '已保存的网关名称为空，请显式指定 --domain。'
     fi
-    checker="$installer_dir/../bin/cuven-gateway-$(uname -m)"
-    if [[ -x "$checker" ]]; then
-        check=("$checker")
-    else
-        check=(go -C "$installer_dir/../core" run -mod=readonly ./cmd/cuven-gateway)
-    fi
-    "${check[@]}" -check-tls -tls-cert "$current_cert" -tls-key "$current_key" -tls-name "$domain"
+    gateway_check -check-tls -tls-cert "$current_cert" -tls-key "$current_key" -tls-name "$domain"
     bash "$installer_dir/install-certbot-hook.sh" "$current_cert" "$current_key"
     if "$upgrade"; then bash "$installer_dir/upgrade-gateway.sh" "$current_cert" "$current_key"; fi
     systemctl enable --now cuven-gateway.service

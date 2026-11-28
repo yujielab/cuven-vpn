@@ -89,6 +89,9 @@ if [[ -e "$CUVEN_TEST_FAULT" && "${!#}" == */firewall.nft ]]; then
     rm -f -- "$CUVEN_TEST_FAULT"
     exit 75
 fi
+if [[ -n "${CUVEN_TEST_REMOVE_TOKEN:-}" && -f "$CUVEN_TEST_REMOVE_TOKEN" && "${!#}" == */firewall.nft ]]; then
+    mv -- /etc/cuven-gateway/token "$CUVEN_TEST_REMOVE_TOKEN"
+fi
 exec /usr/bin/install "$@"
 SHIM
 chmod 0700 "$work/shim/systemctl" "$work/shim/install"
@@ -185,6 +188,40 @@ check_service() {
 systemctl start "$unit"
 check_service
 in_network env SSL_CERT_FILE="$work/qa.crt" "$probe" "$work/etc/cuven-gateway/token"
+# The active process still has its systemd credential when the source disappears.
+active_pid=$(systemctl show "$unit" -p MainPID --value)
+mv "$work/etc/cuven-gateway/token" "$work/saved-token"
+in_network unshare --mount --propagation private -- bash -eu -c '
+    work=$1
+    mount --bind "$work/etc" /etc
+    mount --bind "$work/locks" /run/lock
+    export PATH="$work/shim:$PATH" CUVEN_TEST_LIVE_WORK="$work"
+    args=(--domain gateway.example --port 4433 --cert "$work/qa.crt" --key "$work/qa.key" --ipv4-only)
+    reject() {
+        local error=$1
+        shift
+        if bash "$work/pkg/deploy/setup-gateway.sh" "${args[@]}" "$@" >"$work/token-error.log" 2>&1; then exit 1; fi
+        grep -Fq "$error" "$work/token-error.log"
+        if grep -Fq "invalid-local-fixture" "$work/token-error.log"; then exit 1; fi
+    }
+    for error in "未找到原接入令牌" "无法使用接入令牌文件"; do
+        reject "$error"
+        reject "$error" --upgrade
+        reject "$error" --reconfigure
+        printf "invalid-local-fixture\n" > /etc/cuven-gateway/token
+    done
+    # A credential can also disappear while a candidate is being staged.
+    cp -p "$work/saved-token" /etc/cuven-gateway/token
+    export CUVEN_TEST_REMOVE_TOKEN="$work/token-during-staging"
+    touch "$CUVEN_TEST_REMOVE_TOKEN"
+    reject "无法使用接入令牌文件" --reconfigure
+    cmp "$work/saved-token" "$CUVEN_TEST_REMOVE_TOKEN"
+    [[ ! -e /etc/cuven-gateway/token && ! -e /etc/cuven-gateway/.reconfigure-previous ]]
+' bash "$work"
+[[ "$active_pid" == "$(systemctl show "$unit" -p MainPID --value)" ]]
+in_network env SSL_CERT_FILE="$work/qa.crt" "$probe" "$work/saved-token"
+mv -f "$work/saved-token" "$work/etc/cuven-gateway/token"
+echo "The live gateway retained its PID and accepted the original enrollment after failed installer preflight."
 for _ in {1..100}; do
     if [[ $(in_network ip -o link show cuven0) == *" mtu 1500 "* ]]; then break; fi
     sleep .02
