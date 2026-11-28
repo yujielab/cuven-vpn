@@ -361,7 +361,7 @@ final class VPNController: ObservableObject {
         configuration.serverAddress = profile.endpoint
         configuration.passwordReference = appStart ? nil : reference
         var values: [String: Any] = [
-            TunnelConfiguration.profileKey: profileData,
+            (profile.lockdown ? TunnelConfiguration.lockdownProfileKey : TunnelConfiguration.profileKey): profileData,
             AppCredentialHandoff.modeKey: appStart
         ]
         if let reference {

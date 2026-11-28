@@ -46,6 +46,15 @@ final class VPNProfileTests: XCTestCase {
         let legacy = try VPNProfile.decode(JSONSerialization.data(withJSONObject: stored))
         XCTAssertFalse(legacy.lockdown)
         XCTAssertFalse(legacy.requiresStrictRouting)
+        let pinnedData = try JSONEncoder().encode(profile)
+        let normalData = try JSONEncoder().encode(legacy)
+        let pinnedKey = TunnelConfiguration.lockdownProfileKey
+        let normalKey = TunnelConfiguration.profileKey
+        XCTAssertEqual(TunnelConfiguration.storedProfile(in: [pinnedKey: pinnedData]), profile)
+        XCTAssertEqual(TunnelConfiguration.storedProfile(in: [normalKey: normalData]), legacy)
+        XCTAssertNil(TunnelConfiguration.storedProfile(in: [normalKey: pinnedData]))
+        XCTAssertNil(TunnelConfiguration.storedProfile(in: [pinnedKey: normalData]))
+        XCTAssertNil(TunnelConfiguration.storedProfile(in: [pinnedKey: pinnedData, normalKey: normalData]))
     }
 
     func testCuvenProfileAndToken() throws {

@@ -7,6 +7,19 @@ import Glibc
 
 enum TunnelConfiguration {
     static let profileKey = "Profile"
+    static let lockdownProfileKey = "PinnedGatewayProfile"
+
+    // Older tunnel extensions only recognize "Profile". They must stop if a user
+    // rolls back the app while a pinned profile is still saved in iOS preferences.
+    static func storedProfile(in fields: [String: Any]) -> VPNProfile? {
+        let pinned = fields[lockdownProfileKey] != nil
+        guard !(pinned && fields[profileKey] != nil),
+              let data = fields[pinned ? lockdownProfileKey : profileKey] as? Data,
+              let profile = try? VPNProfile.decode(data),
+              profile.lockdown == pinned else { return nil }
+        return profile
+    }
+
     static let credentialKey = "Credential"
     static let automaticFallbackKey = "AutomaticFallback"
     static let alternateProfileKey = "AlternateProfile"

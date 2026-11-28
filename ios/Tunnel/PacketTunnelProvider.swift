@@ -74,10 +74,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func begin(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) throws {
         guard session == nil, let configuration = protocolConfiguration as? NETunnelProviderProtocol,
               let values = configuration.providerConfiguration,
-              let profileData = values[TunnelConfiguration.profileKey] as? Data else {
+              let profile = TunnelConfiguration.storedProfile(in: values) else {
             throw TunnelFailure.configuration
         }
-        let profile = try VPNProfile.decode(profileData)
         guard profile.transport == .cuven else { throw TunnelFailure.configuration }
         guard configuration.hasRequiredRouting(for: profile) else { throw TunnelFailure.strictRouting }
         let token: String

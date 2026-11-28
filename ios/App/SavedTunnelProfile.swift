@@ -18,8 +18,8 @@ struct SavedTunnelProfile: Equatable {
     }
 
     init?(configuration: NETunnelProviderProtocol) {
-        guard let data = configuration.providerConfiguration?[TunnelConfiguration.profileKey] as? Data,
-              let profile = try? VPNProfile.decode(data) else { return nil }
+        guard let fields = configuration.providerConfiguration,
+              let profile = TunnelConfiguration.storedProfile(in: fields) else { return nil }
         self.init(profile: profile, configuration: configuration)
     }
 
