@@ -281,16 +281,20 @@ def checks(label, info, signed, profile, now):
         errors.append("可执行文件签名和描述文件需要同时授权 packet-tunnel-provider。")
     elif any(not permits(granted, provider) for provider in requested):
         errors.append("签名还声明了描述文件未授权的 Network Extension 类型。")
+    groups = set()
+    for field in ("keychain-access-groups", "com.apple.security.application-groups"):
+        claims = signed.get(field, [])
+        if not isinstance(claims, list) or any(
+            not isinstance(item, str) or not item or "*" in item or "$(" in item for item in claims
+        ):
+            errors.append(f"签名字段 {field} 需要使用具体组名的数组。")
+            continue
+        grants = values(allowed, field)
+        if any(not permits(grants, item) for item in claims):
+            errors.append(f"签名字段 {field} 含有描述文件未授权的访问组。")
+        else:
+            groups.update(claims)
     if info.get("CuvenCredentialStorageVersion") == 2:
-        groups = set()
-        for field in ("keychain-access-groups", "com.apple.security.application-groups"):
-            for item in values(signed, field):
-                if not item or "*" in item or "$(" in item:
-                    shared.append("签入的访问组需要是具体名称。")
-                elif not permits(values(allowed, field), item):
-                    shared.append("描述文件未授权签入的访问组。")
-                else:
-                    groups.add(item)
         if claim == prefix + "." + bundle and isinstance(profile_id, str) and permits([profile_id], claim):
             groups.add(claim)
         return bundle, team, groups, errors, shared
@@ -305,9 +309,7 @@ def checks(label, info, signed, profile, now):
         shared.append("Info.plist 未指定可解析的共享钥匙串组。")
     elif group not in values(signed, "keychain-access-groups"):
         shared.append(f"可执行文件未签入具体共享组 {group}。")
-    elif not permits(values(allowed, "keychain-access-groups"), group):
-        shared.append(f"描述文件未授权共享组 {group}。")
-    return bundle, team, {group} if group else set(), errors, shared
+    return bundle, team, {group} if group in groups and not shared else set(), errors, shared
 
 
 def device_problems(profiles, device_udid=None):

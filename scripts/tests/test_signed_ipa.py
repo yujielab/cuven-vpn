@@ -63,20 +63,46 @@ class SigningFields(unittest.TestCase):
             selected.extend(groups)
         self.assertEqual(set(app).intersection(tunnel), {custom})
 
-    def test_signed_wildcard_is_not_a_specific_shared_group(self):
-        info, signed, profile = fields()
-        signed["keychain-access-groups"] = [PREFIX + ".*"]
-        *_, errors, shared = signing.checks("App", info, signed, profile, NOW)
-        self.assertFalse(errors)
-        self.assertTrue(shared)
+    def test_access_group_claims_must_be_authorized_even_if_other_groups_match(self):
+        for version in (1, 2):
+            for key in ("keychain-access-groups", "com.apple.security.application-groups"):
+                with self.subTest(version=version, key=key):
+                    info, signed, profile = fields()
+                    info["CuvenCredentialStorageVersion"] = version
+                    signed[key] = [GROUP, "other.ungranted"]
+                    profile["Entitlements"][key] = [PREFIX + ".*"]
+                    *_, errors, _ = signing.checks("App", info, signed, profile, NOW)
+                    self.assertTrue(any(key in error for error in errors))
 
-    def test_profile_must_allow_claimed_packet_tunnel_and_shared_group(self):
+    def test_signed_access_groups_are_arrays_of_concrete_names(self):
+        for claims in (PREFIX + ".one", [""], ["$(AppIdentifierPrefix)one"], [PREFIX + ".*"], [1]):
+            with self.subTest(claims=claims):
+                info, signed, profile = fields()
+                signed["keychain-access-groups"] = claims
+                *_, errors, _ = signing.checks("App", info, signed, profile, NOW)
+                self.assertTrue(any("keychain-access-groups" in error for error in errors))
+
+    def test_valid_disjoint_grants_only_affect_shared_storage(self):
+        for version in (1, 2):
+            targets = []
+            for bundle in ("dev.cuven.vpn", "dev.cuven.vpn.tunnel"):
+                info, signed, profile = fields(bundle)
+                info["CuvenCredentialStorageVersion"] = version
+                identity = signed["application-identifier"]
+                signed["keychain-access-groups"] = [identity]
+                _, _, groups, errors, shared = signing.checks(bundle, info, signed, profile, NOW)
+                self.assertFalse(errors)
+                self.assertEqual(bool(shared), version == 1)
+                targets.append(groups)
+            self.assertTrue(targets[0].isdisjoint(targets[1]))
+
+    def test_profile_must_allow_both_packet_tunnel_and_claimed_keychain_groups(self):
         info, signed, profile = fields()
         profile["Entitlements"][NETWORK] = ["dns-proxy"]
         profile["Entitlements"]["keychain-access-groups"] = [PREFIX + ".other"]
-        *_, errors, shared = signing.checks("App", info, signed, profile, NOW)
-        self.assertTrue(errors)
-        self.assertTrue(shared)
+        *_, errors, _ = signing.checks("App", info, signed, profile, NOW)
+        self.assertTrue(any("packet-tunnel-provider" in error for error in errors))
+        self.assertTrue(any("keychain-access-groups" in error for error in errors))
 
     def test_additional_signed_network_extension_types_need_profile_grants(self):
         info, signed, profile = fields()

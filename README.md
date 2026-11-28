@@ -95,7 +95,7 @@ python3 scripts/check-signed-ipa.py ./Cuven-signed.ipa
 
 若两份描述文件都限定了注册设备，工具会核对它们是否至少授权同一台设备。需要检查指定 iPhone 的直装授权时，加上 `--check-device`，按提示在本机输入 UDID。
 
-macOS 使用系统自带的 `codesign`、`security` 和 OpenSSL。Linux 使用支持 `-arch arm64` 的 `ldid` 与 OpenSSL。工具在本机读取最终 IPA 的两个目标，核对 Bundle ID、Packet Tunnel、钥匙串和调试权限的描述文件授权。它会验证各 arm64 可执行文件的 CodeDirectory 签名，并核对实际签名证书的有效期和它在该目标描述文件 `DeveloperCertificates` 中的授权。退出码 0 表示所检查字段匹配，1 表示身份、描述文件或 Packet Tunnel 字段冲突，2 表示未完成检查，3 表示手动连接所需字段匹配但共享组仍需修正。完整安装校验、Apple 证书信任、设备授权和 VPN 连接仍需在真机验证。
+macOS 使用系统自带的 `codesign`、`security` 和 OpenSSL。Linux 使用支持 `-arch arm64` 的 `ldid` 与 OpenSSL。工具在本机读取最终 IPA 的两个目标，核对 Bundle ID、Packet Tunnel、钥匙串和调试权限的描述文件授权。它会验证各 arm64 可执行文件的 CodeDirectory 签名，并核对实际签名证书的有效期和它在该目标描述文件 `DeveloperCertificates` 中的授权。退出码 0 表示所检查字段匹配，1 表示身份、描述文件或 Packet Tunnel 字段冲突，2 表示未完成检查，3 表示两个目标的手动连接签名字段匹配，但缺少可供按需连接使用的共享组。若签名本身声明了描述文件未授权的钥匙串或 App Group，工具会指出具体目标和权限字段并返回 1。完整安装校验、Apple 证书信任、设备授权和 VPN 连接仍需在真机验证。
 
 ## 验证
 
