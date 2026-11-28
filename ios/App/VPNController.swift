@@ -55,8 +55,14 @@ final class VPNController: ObservableObject {
     }
 
     var canSave: Bool {
-        guard canStart else { return false }
-        return hasNewCredential || (try? draftProfile()) != savedProfile || autoConnectPaused || routingNeedsRepair
+        guard canStart, let manager else { return false }
+        guard let profile = try? draftProfile() else { return true }
+        return needsSave(profile, manager: manager)
+    }
+
+    private func needsSave(_ profile: VPNProfile, manager: NETunnelProviderManager) -> Bool {
+        hasNewCredential || profile != savedProfile || !manager.hasRequestedActivation(for: profile.autoConnect) ||
+            routingNeedsRepair || credentialBindingChanged(for: profile)
     }
 
     private var routingNeedsRepair: Bool {
@@ -220,9 +226,11 @@ final class VPNController: ObservableObject {
             let profile = try draftProfile()
             let sessionToken = once ? credential.trimmingCharacters(in: .whitespacesAndNewlines) : nil
             if let sessionToken { try VPNProfile.validateAccessToken(sessionToken) }
-            if profile != savedProfile || hasNewCredential || autoConnectPaused || !manager.isEnabled ||
-                routingNeedsRepair || credentialBindingChanged(for: profile) {
+            if needsSave(profile, manager: manager) {
                 try await persist(profile, manager: manager, once: once)
+            }
+            guard manager.hasRequestedActivation(for: profile.autoConnect) else {
+                throw NSError(domain: NEVPNErrorDomain, code: NEVPNError.configurationStale.rawValue)
             }
             guard !routingNeedsRepair else { throw TunnelFailure.strictRouting }
             refreshStatus()

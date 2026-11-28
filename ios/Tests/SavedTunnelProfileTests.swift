@@ -3,6 +3,21 @@ import XCTest
 @testable import Cuven
 
 final class SavedTunnelProfileTests: XCTestCase {
+    func testActivationMatchesSavedConnectionMode() {
+        let manager = NETunnelProviderManager()
+        manager.isEnabled = false
+        manager.isOnDemandEnabled = false
+        XCTAssertFalse(manager.hasRequestedActivation(for: .off))
+        manager.isEnabled = true
+        XCTAssertTrue(manager.hasRequestedActivation(for: .off))
+        XCTAssertFalse(manager.hasRequestedActivation(for: .wifi))
+        manager.isOnDemandEnabled = true
+        XCTAssertFalse(manager.hasRequestedActivation(for: .off))
+        for mode in [AutoConnect.wifi, .cellular, .all] {
+            XCTAssertTrue(manager.hasRequestedActivation(for: mode))
+        }
+    }
+
     func testSavedFullTunnelAndDNSRoutesCanBeRepaired() throws {
         guard #available(macOS 13.3, *) else { throw XCTSkip("Requires routing controls from macOS 13.3") }
         let profile = try VPNProfile(host: "gateway.example", transport: .cuven, port: 4433)

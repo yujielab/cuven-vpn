@@ -28,3 +28,9 @@ struct SavedTunnelProfile: Equatable {
             ?? configuration.providerConfiguration?[TunnelConfiguration.credentialKey] as? Data
     }
 }
+
+extension NETunnelProviderManager {
+    func hasRequestedActivation(for mode: AutoConnect) -> Bool {
+        isEnabled && isOnDemandEnabled == (mode != .off)
+    }
+}
