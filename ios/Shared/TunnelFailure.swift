@@ -8,6 +8,7 @@ enum TunnelFailure: Int, LocalizedError, CustomNSError {
     case gatewayBusy, gatewayRejected
     case credentialLocked
     case resolutionTimeout
+    case certificatePin
 
     static func fromStartupCode(_ code: String) -> Self? {
         switch code {
@@ -17,6 +18,7 @@ enum TunnelFailure: Int, LocalizedError, CustomNSError {
         case "gateway-ipv6": .gatewayIPv6
         case "certificate-name": .certificateName
         case "certificate-time": .certificateTime
+        case "certificate-pin": .certificatePin
         case "certificate": .certificateTrust
         case "timeout": .gatewayTimeout
         case "cancelled": .cancelled
@@ -48,6 +50,7 @@ enum TunnelFailure: Int, LocalizedError, CustomNSError {
         case .gatewayIPv6: "网关仅支持 IPv4。请在网关启用 IPv6 转发，或在 Cuven 中关闭「网关支持 IPv6」。"
         case .certificateName: "网关证书与配置的服务器名称不匹配。请核对证书域名。"
         case .certificateTime: "网关证书当前不在有效期内。请核对设备时间和网关证书有效期。"
+        case .certificatePin: "封锁模式已拒绝连接，网关公钥指纹不匹配。请从可信的 VPS 管理终端核对指纹。"
         case .certificateTrust: "无法验证网关证书，请检查网关提供的证书链及设备的信任设置。"
         case .gatewayTimeout: "连接网关超时。请检查网络、网关服务及 UDP 端口。"
         }

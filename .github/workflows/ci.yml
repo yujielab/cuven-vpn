@@ -33,6 +33,11 @@ jobs:
         with:
           go-version-file: core/go.mod
           cache-dependency-path: core/go.sum
+      - name: Check released Go packages for known vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+          govulncheck ./cmd/cuven-gateway
+          GOOS=ios GOARCH=arm64 CGO_ENABLED=1 govulncheck ./mobile
       - run: go test -race ./...
       - run: go vet ./...
       - run: go build ./cmd/cuven-gateway
@@ -162,6 +167,8 @@ jobs:
               "SimulatorKeychainTests/testSavedReferenceReadsAndRemovesOnlyTheSelectedCredential()",
               "SimulatorKeychainTests/testNonCredentialReferencesLeaveTheOriginalItemsIntact()",
               "ConnectionLayoutTests/testConnectionSettingsStayReachableAfterRotation()",
+              "VPNProfileTests/testLockdownPinsTheGatewayAndRequiresStrictRouting()",
+              "SavedTunnelProfileTests/testLockdownRequiresFullRoutesEvenWhenHighSecurityWasOff()",
               "VPNProfileTests/testIPv4OnlyCuvenDropsCapturedIPv6BeforeForwarding()",
           }
           while nodes:

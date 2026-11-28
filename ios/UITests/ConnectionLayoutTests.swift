@@ -16,6 +16,9 @@ final class ConnectionLayoutTests: XCTestCase {
 
         let title = app.navigationBars["连接设置"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))
+        let lockdown = app.switches["cuven-lockdown"]
+        XCTAssertTrue(lockdown.waitForExistence(timeout: 5))
+        XCTAssertEqual(lockdown.value as? String, "0")
         device.orientation = .landscapeLeft
         XCTAssertTrue(title.waitForExistence(timeout: 5))
     }

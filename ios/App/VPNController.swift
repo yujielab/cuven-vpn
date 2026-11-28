@@ -12,6 +12,8 @@ final class VPNController: ObservableObject {
     @Published var enableIPv6 = false
     @Published var autoConnect = AutoConnect.off
     @Published var blockLAN = false
+    @Published var lockdown = false
+    @Published var gatewayKeyPin = ""
     @Published var highSecurity = false
     @Published var useEncryptedDNS = false
     @Published var useDNSOverTLS = false
@@ -459,7 +461,7 @@ final class VPNController: ObservableObject {
             host: host, transport: .cuven, cuvenIPv6: enableIPv6,
             port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 0,
             serverName: serverName, autoConnect: autoConnect, blockLAN: blockLAN,
-            highSecurity: highSecurity, encryptedDNS: encryptedDNS
+            highSecurity: highSecurity, lockdown: lockdown, gatewayKeyPin: gatewayKeyPin, encryptedDNS: encryptedDNS
         )
         _ = try TunnelNetworkPlan(profile: profile)
         return profile
@@ -497,6 +499,8 @@ final class VPNController: ObservableObject {
         autoConnect = profile?.autoConnect ?? .off
         blockLAN = profile?.blockLAN ?? false
         highSecurity = profile?.highSecurity ?? false
+        lockdown = profile?.lockdown ?? false
+        gatewayKeyPin = profile?.gatewayKeyPin ?? ""
         let dns = profile?.encryptedDNS
         useEncryptedDNS = dns != nil
         useDNSOverTLS = dns?.tlsServerName != nil

@@ -109,7 +109,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func resolve(_ session: Session) {
         let profile = session.current.profile
-        if profile.highSecurity {
+        if profile.requiresStrictRouting {
             session.endpoints.replace(with: [profile.endpoint])
             connect(session)
             return
@@ -133,7 +133,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func refreshReconnectEndpoints(_ session: Session) {
         let profile = session.current.profile
         guard session.routesInstalled, session.path?.available != false,
-              !profile.highSecurity, !VPNProfile.isIP(profile.host),
+              !profile.requiresStrictRouting, !VPNProfile.isIP(profile.host),
               let lookup = session.endpoints.beginRefresh() else { return }
         worker.async {
             let fresh = TunnelEndpoint.resolve(host: profile.host, port: profile.port)
@@ -172,6 +172,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             do {
                 if connection.profile.requiresEncryptedDNS {
                     try engine.requireEncryptedDNS()
+                }
+                if connection.profile.lockdown {
+                    guard let pin = connection.profile.gatewayKeyPin else { throw ProfileError.gatewayKeyPin }
+                    try engine.pinGatewayPublicKey(pin)
                 }
                 let code = engine.startCuvenDiagnosed(
                     endpoint, accessToken: connection.token,
@@ -338,7 +342,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if !session.routesInstalled {
             let report = session.endpoints.recordStartupFailure(failure)
             let profile = session.current.profile
-            if !profile.highSecurity, !VPNProfile.isIP(profile.host),
+            if !profile.requiresStrictRouting, !VPNProfile.isIP(profile.host),
                session.endpoints.retryStartupResolution(after: failure) {
                 resolve(session)
             } else if session.endpoints.hasUntriedAddress {
@@ -476,7 +480,7 @@ private final class Session {
 
     init(connection: ConnectionProfile, completion: @escaping (Error?) -> Void) {
         current = connection
-        blockLAN = connection.profile.blockLAN || connection.profile.highSecurity
+        blockLAN = connection.profile.blockLAN || connection.profile.requiresStrictRouting
         retainsRoutesOnFailure = connection.profile.usesFullRouting
         self.completion = completion
     }

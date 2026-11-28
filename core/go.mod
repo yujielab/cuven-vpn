@@ -1,6 +1,6 @@
 module github.com/yujielab/cuven-vpn/core
 
-go 1.26.3
+go 1.26.11
 
 require (
 	github.com/apernet/hysteria/extras/v2 v2.14.0
@@ -21,7 +21,7 @@ require (
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
 	golang.org/x/tools v0.53.0 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20261024220952-b3bc704ef0ee
 )

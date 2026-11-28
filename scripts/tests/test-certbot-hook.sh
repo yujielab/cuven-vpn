@@ -64,6 +64,24 @@ renew
 count 0
 touch /tmp/cuven-active
 install -m 0600 /tmp/original-token "$state/token"
+# Certbot lineage names may differ from the actual configured TLS identity.
+mkdir -p "$lineage"
+printf '%s\n' '[req]' 'distinguished_name=dn' '[dn]' >/tmp/test-openssl.conf
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -config /tmp/test-openssl.conf -days 1 -subj /CN=server.example \
+    -addext subjectAltName=DNS:server.example -keyout "$lineage/privkey.pem" \
+    -out "$lineage/fullchain.pem" >/dev/null 2>&1
+printf '%s\n' other.example >"$state/gateway-name"
+if renew --retry >/tmp/rejected 2>&1; then echo 'Accepted renewed certificate for a different host' >&2; exit 1; fi
+count 0
+test -s "$state/.certbot-reload-pending"
+printf '%s\n' server.example >"$state/gateway-name"
+mv "$lineage/privkey.pem" /tmp/test-original-key
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out "$lineage/privkey.pem"
+if renew >/tmp/rejected 2>&1; then echo 'Accepted mismatched renewed private key' >&2; exit 1; fi
+count 0
+test -s "$state/.certbot-reload-pending"
+mv /tmp/test-original-key "$lineage/privkey.pem"
 renew --retry
 count 1
 test ! -e "$state/.certbot-reload-pending"
@@ -107,6 +125,8 @@ apply
 cmp "$config" /tmp/expected.conf
 test "$(stat -c %a "$config")" = 640
 apply
+# Legacy installs without a saved host still validate the certificate and key.
+rm "$state/gateway-name"
 renew
 count 2
 echo 'Verified that matching renewals preserve the live gateway on bad enrollment, load after repair, and migrate only the exact legacy hook.'

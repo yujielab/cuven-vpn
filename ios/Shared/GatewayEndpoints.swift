@@ -36,7 +36,7 @@ struct GatewayEndpoints {
     /// A later unreachable address must not hide a response from a reachable gateway.
     mutating func recordStartupFailure(_ failure: TunnelFailure) -> TunnelFailure {
         switch failure {
-        case .certificateName, .certificateTime, .certificateTrust, .gatewayRejected, .gatewayBusy, .gatewayIPv6:
+        case .certificateName, .certificateTime, .certificateTrust, .certificatePin, .gatewayRejected, .gatewayBusy, .gatewayIPv6:
             startupGatewayFailure = failure
         case .connection, .gatewayTimeout:
             return startupGatewayFailure ?? failure

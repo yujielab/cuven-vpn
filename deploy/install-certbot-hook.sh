@@ -54,14 +54,27 @@ if [ "${1:-}" = --retry ]; then
         exit 0
     fi
 fi
-if ! /etc/letsencrypt/renewal-hooks/.cuven-enrollment-validator -check-token -token-file /etc/cuven-gateway/token; then
+validate_credentials() {
+    validator=/etc/letsencrypt/renewal-hooks/.cuven-enrollment-validator
+    "$validator" -check-token -token-file /etc/cuven-gateway/token || return 1
+    name_file=/etc/cuven-gateway/gateway-name
+    name=''
+    if [ -e "$name_file" ] || [ -L "$name_file" ]; then
+        if ! IFS= read -r name <"$name_file" || [ -z "$name" ]; then
+            echo '无法读取已配置的网关证书名称。' >&2
+            return 1
+        fi
+    fi
+    "$validator" -check-tls -tls-cert "$lineage/fullchain.pem" -tls-key "$lineage/privkey.pem" -tls-name "$name"
+}
+if ! validate_credentials; then
     if current=$(generation) && [ -n "$current" ]; then
         record=$(mktemp /etc/cuven-gateway/.certbot-pending.XXXXXXXX)
         trap 'rm -f -- "$record"' EXIT
         printf '%s %s\n' "$current" "$lineage" > "$record"
         mv -fT -- "$record" "$pending"
     fi
-    echo '续签证书尚未载入。请恢复原接入令牌，再重新运行网关安装器或此续签钩子。' >&2
+    echo '续签证书尚未载入。请按上方错误修复网关凭据，然后重新运行网关安装器或此续签钩子。' >&2
     exit 1
 fi
 systemctl try-restart cuven-gateway.service
@@ -83,15 +96,10 @@ fi
 # temporary directory. A legacy gateway can keep running its original binary.
 candidate=${3:-}
 if [[ -z "$candidate" ]]; then
-    installed=/etc/cuven-gateway/cuven-gateway
-    if [[ -x "$installed" ]] && "$installed" -check-token -token-file /etc/cuven-gateway/token >/dev/null 2>&1; then
-        candidate=$installed
-    else
-        candidate="$repo/bin/cuven-gateway-$(uname -m)"
-        if [[ ! -x "$candidate" ]]; then
-            candidate=$stage/source-validator
-            (cd "$repo/core" && go build -mod=readonly -trimpath -o "$candidate" ./cmd/cuven-gateway)
-        fi
+    candidate="$repo/bin/cuven-gateway-$(uname -m)"
+    if [[ ! -x "$candidate" ]]; then
+        candidate=$stage/source-validator
+        (cd "$repo/core" && go build -mod=readonly -trimpath -o "$candidate" ./cmd/cuven-gateway)
     fi
 fi
 [[ -f "$candidate" && ! -L "$candidate" && -x "$candidate" ]] || { echo "无法安装接入令牌校验程序。" >&2; exit 1; }

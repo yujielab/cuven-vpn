@@ -86,7 +86,7 @@ fi
 
 binary="$repo/bin/cuven-gateway-$(uname -m)"
 if [[ ! -f "$binary" ]]; then
-    command -v go >/dev/null || fail 'Use the standalone installer or install Go 1.26.3 or newer'
+    command -v go >/dev/null || fail 'Use the standalone installer or install Go 1.26.11 or newer'
 fi
 if ! command -v nft >/dev/null || ! command -v ip >/dev/null ||
     ! command -v openssl >/dev/null || ! command -v sysctl >/dev/null; then

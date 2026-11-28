@@ -125,6 +125,8 @@ in_network unshare --mount --propagation private -- bash -eu -c '
     [[ ! -e /etc/cuven-gateway && ! -e /etc/systemd/system/cuven-gateway.service ]]
     setup
     [[ $(cat /etc/cuven-gateway/gateway-name) == gateway.example ]]
+    expected_pin=$(openssl pkey -in "$work/qa.key" -pubout -outform DER | openssl dgst -sha256 -binary | openssl base64 -A)
+    [[ $(bash "$work/pkg/deploy/setup-gateway.sh" --show-pin) == "$expected_pin" ]]
     cp "$work/qa.crt" "$work/original.crt"
     cp "$work/other.crt" "$work/qa.crt"
     if bash "$work/pkg/deploy/setup-gateway.sh" --upgrade; then exit 1; fi
@@ -338,6 +340,13 @@ in_network unshare --mount --propagation private -- bash -eu -c '
     [[ "$(generation)" == "$old" && "$(cat "$state/.certbot-reload-pending")" == "$old $live" ]]
     SSL_CERT_FILE="$work/qa.crt" "$probe" "$work/renewal-token"
     mv "$work/renewal-token" "$state/token"
+    mv "$live/fullchain.pem" "$work/valid-renewal.pem"
+    openssl req -x509 -key "$live/privkey.pem" -days 1 -subj /CN=other.example \
+        -addext subjectAltName=DNS:other.example -out "$live/fullchain.pem" -config "$work/openssl.cnf"
+    if RENEWED_LINEAGE="$live" /etc/letsencrypt/renewal-hooks/deploy/50-cuven-gateway --retry >"$work/renewal.log" 2>&1; then exit 1; fi
+    [[ "$(generation)" == "$old" && "$(cat "$state/.certbot-reload-pending")" == "$old $live" ]]
+    SSL_CERT_FILE="$work/qa.crt" "$probe" "$state/token"
+    mv "$work/valid-renewal.pem" "$live/fullchain.pem"
     bash "$work/pkg/deploy/setup-gateway.sh"
     new=$(generation)
     [[ ${#new} == 32 && "$new" != "$old" && ! -e "$state/.certbot-reload-pending" ]]

@@ -53,6 +53,20 @@ final class SavedTunnelProfileTests: XCTestCase {
         XCTAssertTrue(config.hasRequiredRouting(for: profile))
     }
 
+    func testLockdownRequiresFullRoutesEvenWhenHighSecurityWasOff() throws {
+        guard #available(macOS 13.3, *) else { throw XCTSkip("Requires routing controls from macOS 13.3") }
+        let profile = try VPNProfile(host: "192.0.2.1", transport: .cuven, lockdown: true,
+                                     gatewayKeyPin: Data(repeating: 8, count: 32).base64EncodedString())
+        let config = NETunnelProviderProtocol()
+        config.applyRouting(for: profile)
+        XCTAssertTrue(config.hasRequiredRouting(for: profile))
+        config.includeAllNetworks = false
+        XCTAssertFalse(config.hasRequiredRouting(for: profile))
+        config.applyRouting(for: profile)
+        config.excludeCellularServices = true
+        XCTAssertFalse(config.hasRequiredRouting(for: profile))
+    }
+
     func testOnlyTheSameGatewayAndCredentialBindingKeepAnUnsavedDraft() throws {
         let original = NETunnelProviderProtocol()
         let profile = try VPNProfile(host: "first.example", transport: .cuven, port: 4433)

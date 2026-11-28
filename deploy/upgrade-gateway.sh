@@ -78,7 +78,7 @@ shipped=$repo/bin/cuven-gateway-$(uname -m)
 if [[ -f "$shipped" ]]; then
     install -m 0700 "$shipped" "$work/new"
 else
-    command -v go >/dev/null || fail '请使用自带二进制的独立安装器，或安装 Go 1.26.3 或更高版本。'
+    command -v go >/dev/null || fail '请使用自带二进制的独立安装器，或安装 Go 1.26.11 或更高版本。'
     (cd "$repo/core" && go build -mod=readonly -trimpath -o "$work/new" ./cmd/cuven-gateway)
 fi
 if cmp -s "$work/new" "$binary"; then

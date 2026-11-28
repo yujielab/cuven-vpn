@@ -9,6 +9,20 @@ ask() {
     IFS= read -r answer || fail '输入已结束。自动安装请传入 --domain，申请新证书时加 --accept-terms。'
     printf '%s' "$answer"
 }
+# Read the configured certificate through the administrator's local session.
+if [[ ${1:-} == --show-pin ]]; then
+    (( $# == 1 && EUID == 0 )) || fail '请单独运行 sudo bash cuven-vps-install.sh --show-pin。'
+    unit=/etc/systemd/system/cuven-gateway.service
+    [[ -f /etc/cuven-gateway/install-version && -r "$unit" ]] || fail '未找到已安装的 Cuven 网关。'
+    exec 9>/run/lock/cuven-gateway-install.lock
+    flock -s 9
+    cert=$(sed -n 's/^LoadCredential=certificate://p' "$unit")
+    [[ -f "$cert" && -r "$cert" ]] || fail '无法读取已配置的网关证书。'
+    pin=$(openssl x509 -in "$cert" -pubkey -noout | openssl pkey -pubin -outform DER |
+        openssl dgst -sha256 -binary | openssl base64 -A) || fail '无法计算网关公钥指纹。'
+    printf '%s\n' "$pin"
+    exit 0
+fi
 domain='' port='' family=auto cert='' key='' email=''
 accept_terms=false reconfigure=false upgrade=false update_mss=false
 while (($#)); do
@@ -23,7 +37,7 @@ while (($#)); do
                 --email) email=$2 ;;
             esac
             shift 2 ;;
-        --help) printf '%s\n' 'setup-gateway.sh [--domain HOST] [--accept-terms] [--email EMAIL] [--port PORT] [--cert PATH --key PATH] [--ipv6|--ipv4-only] [--reconfigure|--upgrade] [--update-mss]'; exit 0 ;;
+        --help) printf '%s\n' 'setup-gateway.sh [--domain HOST] [--accept-terms] [--email EMAIL] [--port PORT] [--cert PATH --key PATH] [--ipv6|--ipv4-only] [--reconfigure|--upgrade] [--update-mss] 或 --show-pin'; exit 0 ;;
         --accept-terms) accept_terms=true; shift ;;
         --ipv6) family=6; shift ;;
         --ipv4-only) family=4; shift ;;

@@ -32,6 +32,9 @@ struct VPNProfile: Codable, Sendable, Equatable {
     let blockLAN: Bool
     let preventBypass: Bool
     let highSecurity: Bool
+    let lockdown: Bool
+    let gatewayKeyPin: String?
+    var requiresStrictRouting: Bool { highSecurity || lockdown }
     let https3Camouflage: Bool
     let encryptedDNS: EncryptedDNSProfile?
     let hy2Insecure: Bool
@@ -42,8 +45,8 @@ struct VPNProfile: Codable, Sendable, Equatable {
     var usesFullRouting: Bool { requiresEncryptedDNS || preventBypass }
 
     func permitsAutomaticFallback(to alternate: Self) -> Bool {
-        transport != alternate.transport && !highSecurity && !requirePostQuantum &&
-            !alternate.highSecurity && !alternate.hy2Insecure &&
+        transport != alternate.transport && !requiresStrictRouting && !requirePostQuantum &&
+            !alternate.requiresStrictRouting && !alternate.hy2Insecure &&
             encryptedDNS == alternate.encryptedDNS
     }
 
@@ -64,6 +67,8 @@ struct VPNProfile: Codable, Sendable, Equatable {
         blockLAN: Bool = false,
         preventBypass: Bool = false,
         highSecurity: Bool = false,
+        lockdown: Bool = false,
+        gatewayKeyPin: String? = nil,
         https3Camouflage: Bool = false,
         encryptedDNS: EncryptedDNSProfile? = nil,
         hy2Insecure: Bool = false,
@@ -74,7 +79,7 @@ struct VPNProfile: Codable, Sendable, Equatable {
         guard Self.isHost(host), (1...65535).contains(port) else {
             throw ProfileError.endpoint
         }
-        if highSecurity && !Self.isIP(host) { throw ProfileError.numericSecurityEndpoint }
+        if (highSecurity || lockdown) && !Self.isIP(host) { throw ProfileError.numericSecurityEndpoint }
         if transport == .hy2 && hy2Insecure && (highSecurity || requirePostQuantum) {
             throw ProfileError.insecureSecurityMode
         }
@@ -100,6 +105,15 @@ struct VPNProfile: Codable, Sendable, Equatable {
         self.requirePostQuantum = transport == .hy2 && requirePostQuantum
         self.blockLAN = blockLAN
         self.preventBypass = preventBypass
+        self.lockdown = lockdown
+        if lockdown {
+            guard transport == .cuven, let pin = gatewayKeyPin?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let bytes = Data(base64Encoded: pin), bytes.count == 32,
+                  bytes.base64EncodedString() == pin else { throw ProfileError.gatewayKeyPin }
+            self.gatewayKeyPin = pin
+        } else {
+            self.gatewayKeyPin = nil
+        }
         self.highSecurity = highSecurity
         self.https3Camouflage = highSecurity && transport == .cuvenWG && !wireGuardDirect && https3Camouflage
         self.encryptedDNS = try encryptedDNS?.validated()
@@ -113,7 +127,7 @@ struct VPNProfile: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case transport, cuvenIPv6, wireGuard, wireGuardDirect, host, port, serverName, customDNSServers, useCustomDNS, autoConnect
-        case requirePostQuantum, blockLAN, preventBypass, highSecurity, https3Camouflage, encryptedDNS
+        case requirePostQuantum, blockLAN, preventBypass, highSecurity, lockdown, gatewayKeyPin, https3Camouflage, encryptedDNS
         case hy2Insecure, hy2Salamander
     }
 
@@ -134,6 +148,8 @@ struct VPNProfile: Codable, Sendable, Equatable {
             blockLAN: saved.decode(Bool.self, forKey: .blockLAN),
             preventBypass: saved.decode(Bool.self, forKey: .preventBypass),
             highSecurity: saved.decodeIfPresent(Bool.self, forKey: .highSecurity) ?? false,
+            lockdown: saved.decodeIfPresent(Bool.self, forKey: .lockdown) ?? false,
+            gatewayKeyPin: saved.decodeIfPresent(String.self, forKey: .gatewayKeyPin),
             https3Camouflage: saved.decodeIfPresent(Bool.self, forKey: .https3Camouflage) ?? false,
             encryptedDNS: saved.decodeIfPresent(EncryptedDNSProfile.self, forKey: .encryptedDNS),
             hy2Insecure: saved.decodeIfPresent(Bool.self, forKey: .hy2Insecure) ?? false,
@@ -402,6 +418,7 @@ enum ProfileError: LocalizedError {
     case credential
     case wireGuard
     case numericSecurityEndpoint
+    case gatewayKeyPin
     case encryptedDNS
     case insecureSecurityMode
     case obfuscationPassword
@@ -414,7 +431,8 @@ enum ProfileError: LocalizedError {
         case .uri: "请输入有效的 hysteria2:// 或 hy2:// 链接。"
         case .unsupportedURI: "此 HY2 链接包含不支持的参数或参数值。"
         case .credential: "请输入有效的连接凭据。"
-        case .numericSecurityEndpoint: "请在「服务器地址」填写网关的 IPv4 或 IPv6 地址。高安全模式下，网关证书的域名可填在「TLS 证书域名」。"
+        case .numericSecurityEndpoint: "请在「服务器地址」填写网关的 IPv4 或 IPv6 地址。网关证书的域名可填在「TLS 证书域名」。"
+        case .gatewayKeyPin: "封锁模式需要从自有 VPS 获取的网关公钥指纹（SHA-256，Base64 格式）。"
         case .encryptedDNS: "请填写 DoH 的完整 HTTPS URL 或 DoT 的证书域名，以及一到四个解析器 IP。"
         case .wireGuard: "请检查 WireGuard 密钥和隧道地址。密钥应为 Base64 编码的 32 字节，隧道地址需包含前缀长度。"
         case .insecureSecurityMode: "高安全模式和严格后量子模式需要验证服务器证书。"

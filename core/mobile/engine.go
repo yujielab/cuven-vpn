@@ -3,8 +3,10 @@ package mobile
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"net"
@@ -25,6 +27,7 @@ const (
 var (
 	errEngineUsed      = errors.New("packet engine has already been used")
 	errEngineInactive  = errors.New("packet engine is inactive")
+	errGatewayKeyPin   = errors.New("gateway public key pin mismatch")
 	errInvalidBatch    = errors.New("invalid packet batch")
 	errInvalidMTU      = errors.New("tunnel MTU must be between 1280 and 9000")
 	errIPv6Unavailable = errors.New("Cuven gateway does not support IPv6")
@@ -47,6 +50,7 @@ type Engine struct {
 	cancel         context.CancelFunc
 	live           *session
 	rejectPlainDNS bool
+	gatewayKeyPin  *[sha256.Size]byte
 }
 
 type session struct {
@@ -83,6 +87,22 @@ func (e *Engine) RequireEncryptedDNS() error {
 	return nil
 }
 
+// PinGatewayPublicKey requires the enrolled SHA-256 SPKI hash in addition to normal TLS verification.
+// Configure it before starting the engine.
+func (e *Engine) PinGatewayPublicKey(pin string) error {
+	raw, err := base64.StdEncoding.Strict().DecodeString(pin)
+	if err != nil || len(raw) != sha256.Size || base64.StdEncoding.EncodeToString(raw) != pin {
+		return errGatewayKeyPin
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.state != engineIdle {
+		return errEngineUsed
+	}
+	e.gatewayKeyPin = (*[sha256.Size]byte)(raw)
+	return nil
+}
+
 // PacketMTU returns the active session's inner IP limit, or zero before startup.
 func (e *Engine) PacketMTU() int64 {
 	if live := e.current(); live != nil {
@@ -110,13 +130,26 @@ func (e *Engine) RTTMilliseconds() int64 {
 
 // StartCuven opens the native authenticated Cuven IP tunnel.
 func (e *Engine) StartCuven(endpoint, accessToken, serverName string, requireIPv6, blockLAN bool) error {
+	return e.startCuven(endpoint, accessToken, &tls.Config{ServerName: serverName}, requireIPv6, blockLAN)
+}
+
+func (e *Engine) startCuven(endpoint, accessToken string, config *tls.Config, requireIPv6, blockLAN bool) error {
 	token, err := iptunnel.ParseToken(accessToken)
 	if err != nil {
 		return err
 	}
 	defer clear(token[:])
 	return e.start(iptunnel.MTU, packetPolicy{blockLAN: blockLAN}, func(ctx context.Context) (packetTunnel, error) {
-		session, err := iptunnel.Dial(ctx, endpoint, token, &tls.Config{ServerName: serverName})
+		// start has transitioned out of engineIdle, making the configured pin immutable.
+		if pin := e.gatewayKeyPin; pin != nil {
+			config.VerifyConnection = func(state tls.ConnectionState) error {
+				if len(state.PeerCertificates) == 0 || sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo) != *pin {
+					return errGatewayKeyPin
+				}
+				return nil
+			}
+		}
+		session, err := iptunnel.Dial(ctx, endpoint, token, config)
 		if err == nil && requireIPv6 && !session.IPv6Enabled() {
 			_ = session.Close()
 			return nil, errIPv6Unavailable
@@ -143,6 +176,8 @@ func startFailureCode(err error) string {
 		return "gateway-busy"
 	case errors.Is(err, iptunnel.ErrGatewayRejected):
 		return "gateway-rejected"
+	case errors.Is(err, errGatewayKeyPin):
+		return "certificate-pin"
 	case errors.Is(err, errIPv6Unavailable):
 		return "gateway-ipv6"
 	case errors.As(err, &hostname):

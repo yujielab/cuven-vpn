@@ -9,7 +9,7 @@ final class DisconnectDiagnosticTests: XCTestCase {
         let cases: [(String, TunnelFailure)] = [
             ("gateway-busy", .gatewayBusy), ("gateway-rejected", .gatewayRejected),
             ("gateway-ipv6", .gatewayIPv6), ("certificate-name", .certificateName),
-            ("certificate-time", .certificateTime), ("certificate", .certificateTrust),
+            ("certificate-time", .certificateTime), ("certificate", .certificateTrust), ("certificate-pin", .certificatePin),
             ("timeout", .gatewayTimeout), ("cancelled", .cancelled),
             ("unknown private details", .connection)
         ]

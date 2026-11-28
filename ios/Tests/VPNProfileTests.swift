@@ -28,6 +28,26 @@ final class VPNProfileTests: XCTestCase {
         XCTAssertThrowsError(try AppCredentialHandoff.token(options: options, storedReference: nil, sessionID: id, autoConnect: .all))
     }
 
+    func testLockdownPinsTheGatewayAndRequiresStrictRouting() throws {
+        let pin = Data(repeating: 9, count: 32).base64EncodedString()
+        let profile = try VPNProfile(host: "192.0.2.7", transport: .cuven, lockdown: true, gatewayKeyPin: pin)
+        XCTAssertEqual(try VPNProfile.decode(JSONEncoder().encode(profile)), profile)
+        XCTAssertTrue(profile.requiresStrictRouting)
+        XCTAssertTrue(profile.requiresEncryptedDNS)
+        XCTAssertThrowsError(try VPNProfile(host: "node.example", transport: .cuven, lockdown: true, gatewayKeyPin: pin))
+        XCTAssertThrowsError(try VPNProfile(host: "192.0.2.7", transport: .hy2, lockdown: true, gatewayKeyPin: pin))
+        for invalid in [nil, "", "invalid", Data(repeating: 1, count: 31).base64EncodedString()] {
+            XCTAssertThrowsError(try VPNProfile(host: "192.0.2.7", transport: .cuven, lockdown: true, gatewayKeyPin: invalid))
+        }
+        var stored = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(profile)) as? [String: Any])
+        stored.removeValue(forKey: "gatewayKeyPin")
+        XCTAssertThrowsError(try VPNProfile.decode(JSONSerialization.data(withJSONObject: stored)))
+        stored.removeValue(forKey: "lockdown")
+        let legacy = try VPNProfile.decode(JSONSerialization.data(withJSONObject: stored))
+        XCTAssertFalse(legacy.lockdown)
+        XCTAssertFalse(legacy.requiresStrictRouting)
+    }
+
     func testCuvenProfileAndToken() throws {
         let token = String(Data(repeating: 255, count: 32).base64EncodedString().dropLast())
             .replacingOccurrences(of: "/", with: "_")

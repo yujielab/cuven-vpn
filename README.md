@@ -4,6 +4,16 @@ Cuven IP 将 iPhone 或 iPad 的原始 IPv4、IPv6 包转发到自有 Linux 网�
 
 旧版 HY2 和 WireGuard 配置需要换为 Cuven IP 网关和接入令牌。更新后的 App 不再提供旧协议的连接入口。
 
+## Cuven 封锁模式
+
+如果你面临定向网络威胁，可以在「连接设置」开启 Cuven 封锁模式。它默认为关闭。开启后，Cuven 只拨号到手动填写的网关 IP，使用全隧道路由与加密 DNS，并阻止局域网访问。每次握手都会验证网关证书的信任链、名称和固定的公钥指纹。部分必要系统流量仍由 iOS 处理。
+
+1. 通过自己信任的管理连接登录 VPS，用本版安装器运行 `sudo bash ./cuven-vps-install.sh --show-pin`，复制输出的一行 Base64 指纹。
+2. 在 App 中填写网关 IP。使用域名证书时，将证书上的域名填入「TLS 证书域名」。
+3. 开启「Cuven 封锁模式」，粘贴指纹，保存并连接。关闭此开关后可恢复普通连接设置。
+
+证书沿用同一公钥续签时指纹保持有效。更换网关密钥时，须从管理终端重新取得指纹。Cuven 封锁模式保护 VPN 网络连接。iOS 自带的「锁定模式」可在「设置 → 隐私与安全性」中单独开启。
+
 ## 一键部署 Linux 网关
 
 在 Debian 或 Ubuntu 的 x86_64、ARM64 VPS 上启用 systemd 和 TUN 后，可以直接安装。以下命令下载固定版本、校验 SHA-256，然后启动交互式安装器。
@@ -20,9 +30,9 @@ wget -O cuven-vps-install.sh https://raw.githubusercontent.com/yujielab/cuven-vp
 
 已有网关的接入令牌丢失、内容无效或文件权限过宽时，安装器会在重启服务前退出。可从自己的备份恢复原令牌到 `/etc/cuven-gateway/token`，将所有者设为 root、权限设为 `0600` 后重试。首次安装若在 Certbot 签发阶段中断，可直接重跑上方命令；令牌会在证书通过检查后创建。
 
-使用 Certbot 自动续签时，网关会先检查接入令牌。若令牌异常，当前进程继续使用原证书，Certbot 日志会说明新证书尚待载入。恢复原令牌后，重新运行上方安装命令即可载入新证书。安装器会识别已经重启过的服务，避免重复断开连接。
+使用 Certbot 自动续签时，网关会检查接入令牌、新证书及对应私钥，并核对已保存的网关域名或 IP。若检查失败，当前进程继续使用原证书。修正日志指出的问题后，重新运行上方安装命令即可载入新证书。安装器会识别已经重启过的服务，避免重复断开连接。
 
-从源码安装需要 Go 1.26.3 或更高版本。运行 `sudo bash deploy/setup-gateway.sh` 进入相同的交互流程。在 Linux 构建机运行 `bash scripts/package-gateway-installer.sh cuven-vps-install.sh` 可重新构建两个架构的安装包。
+从源码安装需要 Go 1.26.11 或更高版本。运行 `sudo bash deploy/setup-gateway.sh` 进入相同的交互流程。在 Linux 构建机运行 `bash scripts/package-gateway-installer.sh cuven-vps-install.sh` 可重新构建两个架构的安装包。
 
 在 VPS 的仓库目录执行，下例使用 UDP 4433：
 

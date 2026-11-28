@@ -6,7 +6,7 @@ extension NETunnelProviderProtocol {
         includeAllNetworks = profile.usesFullRouting
         enforceRoutes = profile.blockLAN && !includeAllNetworks
         excludeLocalNetworks = !profile.requiresEncryptedDNS && !profile.blockLAN
-        if profile.highSecurity {
+        if profile.requiresStrictRouting {
             excludeAPNs = false
             excludeCellularServices = false
         }
@@ -15,6 +15,6 @@ extension NETunnelProviderProtocol {
     func hasRequiredRouting(for profile: VPNProfile) -> Bool {
         (!profile.usesFullRouting || includeAllNetworks) &&
             (!profile.requiresEncryptedDNS || !excludeLocalNetworks) &&
-            (!profile.highSecurity || (!excludeAPNs && !excludeCellularServices))
+            (!profile.requiresStrictRouting || (!excludeAPNs && !excludeCellularServices))
     }
 }

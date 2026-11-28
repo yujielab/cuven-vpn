@@ -198,15 +198,25 @@ private struct NetworkSettingsView: View {
             .disabled(!vpn.canEdit)
 
             Section {
-                Toggle("高安全模式", isOn: $vpn.highSecurity)
-                if !vpn.highSecurity {
-                    Toggle("阻止局域网访问", isOn: $vpn.blockLAN)
+                Toggle("Cuven 封锁模式", isOn: $vpn.lockdown)
+                    .accessibilityIdentifier("cuven-lockdown")
+                if vpn.lockdown {
+                    TextField("网关公钥指纹（SHA-256）", text: $vpn.gatewayKeyPin)
+                        .cuvenPlainInput()
+                        .accessibilityIdentifier("gateway-key-pin")
+                } else {
+                    Toggle("高安全模式", isOn: $vpn.highSecurity)
+                    if !vpn.highSecurity {
+                        Toggle("阻止局域网访问", isOn: $vpn.blockLAN)
+                    }
                 }
             } footer: {
-                if vpn.highSecurity {
+                if vpn.lockdown {
+                    Text("请填写网关 IP，并从可信的 VPS 管理终端取得公钥指纹。连接时会同时校验证书和指纹，强制全隧道路由、加密 DNS 并阻止局域网访问。更换网关密钥后需要更新指纹。")
+                } else if vpn.highSecurity {
                     Text("强制路由和隧道内加密 DNS。WebRTC 随 VPN 出口通行。服务器需填写 IP。")
                 } else {
-                    Text("Cuven IP 使用全流量路由，部分系统流量仍由 iOS 处理。")
+                    Text("若你面临定向网络攻击，可开启 Cuven 封锁模式，并通过自有 VPS 核对证书公钥。部分系统流量仍由 iOS 处理。")
                 }
             }
             .disabled(!vpn.canEdit)
