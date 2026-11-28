@@ -130,6 +130,19 @@ jobs:
         id: simulator_tests
         timeout-minutes: 12
         run: |
+          fixture=$(mktemp -d "$RUNNER_TEMP/cuven-browser.XXXXXXXX")
+          go build -o "$fixture/server" ./scripts/tests/browser-proxy-fixture.go
+          "$fixture/server" "$fixture" >"$fixture/server.log" 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..100}; do
+            test -s "$fixture/proxy" && break
+            sleep 0.1
+          done
+          test -s "$fixture/proxy"
+          xcrun simctl keychain "$SIMULATOR_ID" add-root-cert "$fixture/ca.pem"
+          app_data=$(xcrun simctl get_app_container "$SIMULATOR_ID" dev.cuven.vpn data)
+          cp "$fixture/proxy" "$app_data/tmp/cuven-browser-proxy"
           xcodebuild -project Cuven.xcodeproj -scheme Cuven -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath DerivedData \
             -resultBundlePath "$RUNNER_TEMP/CuvenSimulator.xcresult" \
@@ -164,6 +177,9 @@ jobs:
           keychain_test = "SimulatorKeychainTests/testAppCredentialFollowsSystemKeychainGrant()"
           expected = {
               keychain_test,
+              "BrowserWebKitTests/testTrustedProxyLoadsTheHTTPSOrigin()",
+              "BrowserWebKitTests/testWebKitConnectsToCustomProxyUsingTLS()",
+              "ConnectionLayoutTests/testBrowserCanPreviewCustomIPv6WithoutConnecting()",
               "SimulatorKeychainTests/testSavedReferenceReadsAndRemovesOnlyTheSelectedCredential()",
               "SimulatorKeychainTests/testNonCredentialReferencesLeaveTheOriginalItemsIntact()",
               "ConnectionLayoutTests/testConnectionSettingsStayReachableAfterRotation()",

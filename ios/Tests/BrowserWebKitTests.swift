@@ -19,6 +19,24 @@ final class BrowserWebKitTests: XCTestCase {
     }
 
     @MainActor
+    func testTrustedProxyLoadsTheHTTPSOrigin() async throws {
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("cuven-browser-proxy")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: config.path), "The private simulator proxy fixture is required")
+        let address = try String(contentsOf: config, encoding: .utf8)
+        let proxy = try XCTUnwrap(BrowserProxy(address: address, username: "", password: ""))
+        let destination = try XCTUnwrap(URL(string: "https://cuven-browser.test/proof"))
+        let tab = BrowserTab(page: .website(destination, proxy), permit: { true })
+        defer { tab.close() }
+        tab.start()
+        let deadline = ContinuousClock.now + .seconds(15)
+        while tab.webView.title != "Cuven HTTPS fixture", tab.error == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(tab.webView.title, "Cuven HTTPS fixture", tab.error ?? "Expected the private origin through CONNECT")
+        XCTAssertEqual(tab.webView.url, destination)
+    }
+
+    @MainActor
     func testWebKitConnectsToCustomProxyUsingTLS() async throws {
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
