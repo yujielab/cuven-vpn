@@ -64,13 +64,14 @@ func (s *Session) WritePacket(packet []byte) error {
 }
 
 type fragmentPair struct {
-	id      uint32
 	started time.Time
 	first   []byte
 	last    []byte
 }
 
-type reassembler [reassemblySlots]fragmentPair
+type reassembler struct {
+	pending map[uint32]fragmentPair
+}
 
 func (r *reassembler) unpack(frame []byte, now time.Time) []byte {
 	if len(frame) < 2 {
@@ -99,9 +100,9 @@ func (r *reassembler) unpack(frame []byte, now time.Time) []byte {
 		return nil
 	}
 	id := binary.BigEndian.Uint32(frame[1:fragmentHeader])
-	pair := &r[id%reassemblySlots]
-	if pair.started.IsZero() || pair.id != id || now.Sub(pair.started) >= reassemblyWindow {
-		*pair = fragmentPair{id: id, started: now}
+	pair, found := r.pending[id]
+	if !found || now.Sub(pair.started) >= reassemblyWindow {
+		pair = fragmentPair{started: now}
 	}
 	if frame[0] == frameFirst {
 		pair.first = payload
@@ -109,12 +110,27 @@ func (r *reassembler) unpack(frame []byte, now time.Time) []byte {
 		pair.last = payload
 	}
 	if pair.first == nil || pair.last == nil {
+		if r.pending == nil {
+			r.pending = make(map[uint32]fragmentPair)
+		}
+		if !found && len(r.pending) == reassemblySlots {
+			// Make room for a new incomplete packet only when all slots are occupied.
+			var oldestID uint32
+			var oldestTime time.Time
+			for otherID, other := range r.pending {
+				if oldestTime.IsZero() || other.started.Before(oldestTime) {
+					oldestID, oldestTime = otherID, other.started
+				}
+			}
+			delete(r.pending, oldestID)
+		}
+		r.pending[id] = pair
 		return nil
 	}
 	packet := make([]byte, len(pair.first)+len(pair.last))
 	copy(packet, pair.first)
 	copy(packet[fragmentSize:], pair.last)
-	*pair = fragmentPair{}
+	delete(r.pending, id)
 	return packet
 }
 
