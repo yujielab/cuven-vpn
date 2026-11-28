@@ -257,7 +257,7 @@ packaged="$work/pkg/bin/cuven-gateway-$(uname -m)"
 mv -- "$packaged" "$work/working-gateway"
 cat >"$packaged" <<BAD_CANDIDATE
 #!/bin/sh
-case "\$1" in -check-tls) exec "$work/working-gateway" "\$@" ;; esac
+case "\$1" in -check-tls|-check-token) exec "$work/working-gateway" "\$@" ;; esac
 exit 75
 BAD_CANDIDATE
 chmod 0700 "$packaged"
