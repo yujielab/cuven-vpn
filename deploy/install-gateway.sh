@@ -178,9 +178,8 @@ cat >>"$staging/firewall.nft" <<EOF
         udp dport $port ct state new limit rate over 200/second burst 400 packets drop
     }
     chain tunnel_mss {
-        # Keep a conservative MSS ceiling for both current and 1280-byte legacy peers.
-        meta nfproto ipv4 tcp option maxseg size > 1240 tcp option maxseg size set 1240
-        meta nfproto ipv6 tcp option maxseg size > 1220 tcp option maxseg size set 1220
+        # Limit TCP segments to the smaller of the tunnel and egress path MTUs.
+        tcp option maxseg size set rt mtu
     }
     chain forward {
         type filter hook forward priority -20; policy accept;

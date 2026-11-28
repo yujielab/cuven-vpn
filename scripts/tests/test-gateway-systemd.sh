@@ -41,7 +41,7 @@ mkdir -p "$work"/{pkg/bin,pkg/deploy,etc/systemd/system,etc/alternatives,locks,s
 # Ubuntu's /usr/bin/awk resolves via a symlink in /etc.
 ln -s "$(readlink -f "$(command -v awk)")" "$work/etc/alternatives/awk"
 install -m 0700 "$binary" "$work/pkg/bin/cuven-gateway-$(uname -m)"
-cp "$repo"/deploy/*.sh "$repo/deploy/migrate-certbot-hook.py" "$work/pkg/deploy/"
+cp "$repo"/deploy/*.sh "$repo/deploy/"{migrate-certbot-hook,update-gateway-mss}.py "$work/pkg/deploy/"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
     -subj /CN=gateway.example -addext subjectAltName=DNS:gateway.example -days 1 \
     -keyout "$work/qa.key" -out "$work/qa.crt" >/dev/null 2>&1
@@ -191,6 +191,30 @@ check_service() {
 systemctl start "$unit"
 check_service
 in_network env SSL_CERT_FILE="$work/qa.crt" "$probe" "$work/etc/cuven-gateway/token"
+# Migrate only the two legacy firewall rules, while the same process serves.
+mss_pid=$(systemctl show "$unit" -p MainPID --value)
+in_network unshare --mount --propagation private -- bash -eu -c '
+    work=$1
+    mount --bind "$work/etc" /etc
+    mount --bind "$work/locks" /run/lock
+    export PATH="$work/shim:$PATH" CUVEN_TEST_LIVE_WORK="$work"
+    fw=/etc/cuven-gateway/firewall.nft
+    cp "$fw" "$work/route-mss.nft"
+    sed -i "/^        tcp option maxseg size set rt mtu$/c\\        meta nfproto ipv4 tcp option maxseg size > 1240 tcp option maxseg size set 1240\\n        meta nfproto ipv6 tcp option maxseg size > 1220 tcp option maxseg size set 1220" "$fw"
+    nft -f "$fw"
+    nft add rule inet cuven_gateway tunnel_mss counter
+    before=$(sha256sum "$fw")
+    if bash "$work/pkg/deploy/setup-gateway.sh" --update-mss; then exit 1; fi
+    [[ "$before" == "$(sha256sum "$fw")" ]]
+    nft list chain inet cuven_gateway tunnel_mss | grep -q counter
+    nft -f "$fw"
+    for attempt in 1 2; do
+        bash "$work/pkg/deploy/setup-gateway.sh" --update-mss
+        cmp "$fw" "$work/route-mss.nft"
+        nft list chain inet cuven_gateway tunnel_mss | grep -Fq "tcp option maxseg size set rt mtu"
+    done
+' bash "$work"
+[[ "$mss_pid" == "$(systemctl show "$unit" -p MainPID --value)" ]]
 # The active process still has its systemd credential when the source disappears.
 active_pid=$(systemctl show "$unit" -p MainPID --value)
 mv "$work/etc/cuven-gateway/token" "$work/saved-token"

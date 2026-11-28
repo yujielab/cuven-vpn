@@ -10,7 +10,7 @@ ask() {
     printf '%s' "$answer"
 }
 domain='' port='' family=auto cert='' key='' email=''
-accept_terms=false reconfigure=false upgrade=false
+accept_terms=false reconfigure=false upgrade=false update_mss=false
 while (($#)); do
     case "$1" in
         --domain|--port|--cert|--key|--email)
@@ -23,11 +23,12 @@ while (($#)); do
                 --email) email=$2 ;;
             esac
             shift 2 ;;
-        --help) printf '%s\n' 'setup-gateway.sh [--domain HOST] [--accept-terms] [--email EMAIL] [--port PORT] [--cert PATH --key PATH] [--ipv6|--ipv4-only] [--reconfigure|--upgrade]'; exit 0 ;;
+        --help) printf '%s\n' 'setup-gateway.sh [--domain HOST] [--accept-terms] [--email EMAIL] [--port PORT] [--cert PATH --key PATH] [--ipv6|--ipv4-only] [--reconfigure|--upgrade] [--update-mss]'; exit 0 ;;
         --accept-terms) accept_terms=true; shift ;;
         --ipv6) family=6; shift ;;
         --ipv4-only) family=4; shift ;;
         --upgrade) upgrade=true; shift ;;
+        --update-mss) update_mss=true; shift ;;
         --reconfigure) reconfigure=true; shift ;;
         *) fail "未知选项 $1，请查看 --help。" ;;
     esac
@@ -70,9 +71,14 @@ if [[ -f /etc/cuven-gateway/install-version ]] && ! "$reconfigure"; then
     fi
     gateway_check -check-tls -tls-cert "$current_cert" -tls-key "$current_key" -tls-name "$domain"
     bash "$installer_dir/install-certbot-hook.sh" "$current_cert" "$current_key"
+    if "$update_mss" && ! command -v python3 >/dev/null; then
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3
+    fi
     if "$upgrade"; then bash "$installer_dir/upgrade-gateway.sh" "$current_cert" "$current_key"; fi
     systemctl enable --now cuven-gateway.service
     systemctl is-active cuven-gateway.service
+    if "$update_mss"; then python3 "$installer_dir/update-gateway-mss.py"; fi
     hook=/etc/letsencrypt/renewal-hooks/deploy/50-cuven-gateway
     if [[ -f /etc/cuven-gateway/.certbot-reload-pending && -x "$hook" &&
           "$current_cert" == /etc/letsencrypt/live/*/fullchain.pem ]] &&
