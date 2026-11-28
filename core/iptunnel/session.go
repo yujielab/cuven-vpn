@@ -203,6 +203,23 @@ func tokenProof(connection *quic.Conn, token Token) ([]byte, error) {
 	return mac.Sum(nil), nil
 }
 
+// Each direction of the authentication stream contains one fixed-size message
+// followed by FIN. The caller sets the deadline for both the data and FIN.
+func readAuthFrame(stream io.Reader, frame []byte) error {
+	if _, err := io.ReadFull(stream, frame); err != nil {
+		return err
+	}
+	var extra [1]byte
+	_, err := io.ReadFull(stream, extra[:])
+	if err == io.EOF {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return ErrAuthentication
+}
+
 func authenticateClient(ctx context.Context, connection *quic.Conn, token Token) (bool, error) {
 	proof, err := tokenProof(connection, token)
 	if err != nil {
@@ -224,13 +241,12 @@ func authenticateClient(ctx context.Context, connection *quic.Conn, token Token)
 		return false, err
 	}
 	var reply [1]byte
-	if _, err := io.ReadFull(stream, reply[:]); err != nil {
+	if err := readAuthFrame(stream, reply[:]); err != nil {
 		return false, err
 	}
 	if reply[0] != authAccepted && reply[0] != authAccepted|authIPv6 {
 		return false, ErrAuthentication
 	}
-	stream.CancelRead(0)
 	return reply[0]&authIPv6 != 0, nil
 }
 
@@ -252,10 +268,9 @@ func authenticateServer(ctx context.Context, connection *quic.Conn, token Token,
 	defer stop()
 	var proof [tokenSize]byte
 	defer clear(proof[:])
-	if _, err := io.ReadFull(stream, proof[:]); err != nil || !hmac.Equal(proof[:], expected) {
+	if err := readAuthFrame(stream, proof[:]); err != nil || !hmac.Equal(proof[:], expected) {
 		return ErrAuthentication
 	}
-	stream.CancelRead(0)
 	if admit != nil && !admit() {
 		return ErrGatewayBusy
 	}

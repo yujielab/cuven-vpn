@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -99,15 +100,29 @@ func checkTLSIdentity(certFile, keyFile, name string) error {
 }
 
 func readTokenFile(path string) (iptunnel.Token, error) {
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 128 || info.Mode().Perm()&0077 != 0 {
-		return iptunnel.Token{}, fmt.Errorf("gateway requires a private regular token file")
-	}
-	data, err := os.ReadFile(path)
+	const limit = 128
+	// O_NONBLOCK lets us reject a FIFO without waiting for a writer.
+	file, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY, 0)
 	if err != nil {
 		return iptunnel.Token{}, err
 	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return iptunnel.Token{}, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > limit || info.Mode().Perm()&0077 != 0 {
+		return iptunnel.Token{}, fmt.Errorf("gateway requires a private regular token file of at most %d bytes", limit)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	defer clear(data)
+	if err != nil {
+		return iptunnel.Token{}, err
+	}
+	if len(data) > limit {
+		return iptunnel.Token{}, fmt.Errorf("gateway token file exceeds %d bytes", limit)
+	}
 	return iptunnel.ParseToken(strings.TrimSpace(string(data)))
 }
 

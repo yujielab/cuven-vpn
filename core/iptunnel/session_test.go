@@ -7,15 +7,46 @@ import (
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http/httptest"
 	"net/netip"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/quic-go/quic-go"
 )
+
+func TestReadAuthFrameRequiresExactLengthAndEnd(t *testing.T) {
+	for _, size := range []int{1, tokenSize} {
+		message := bytes.Repeat([]byte{0x13}, size)
+		shortErr := io.ErrUnexpectedEOF
+		if size == 1 {
+			shortErr = io.EOF
+		}
+		for _, tc := range []struct {
+			name  string
+			input io.Reader
+			want  error
+		}{
+			{"complete", iotest.OneByteReader(bytes.NewReader(message)), nil},
+			{"short", bytes.NewReader(message[:size-1]), shortErr},
+			{"trailing", bytes.NewReader(append(bytes.Clone(message), 0)), ErrAuthentication},
+			{"deadline before end", io.MultiReader(bytes.NewReader(message), iotest.ErrReader(context.DeadlineExceeded)), context.DeadlineExceeded},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", size, tc.name), func(t *testing.T) {
+				frame := make([]byte, size)
+				err := readAuthFrame(tc.input, frame)
+				if !errors.Is(err, tc.want) || (err == nil && !bytes.Equal(frame, message)) {
+					t.Fatalf("unexpected frame or error %v", err)
+				}
+			})
+		}
+	}
+}
 
 func TestAuthenticatedIPRoundTrip(t *testing.T) {
 	fixture := httptest.NewTLSServer(nil)

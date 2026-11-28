@@ -49,7 +49,7 @@ sudo ./deploy/install-gateway.sh \
 
 网关进行源地址检查，并使用独立的 nftables 表限制转发。网关阻止客户端访问主机服务、内网与链路本地地址。更新或续签证书后重启服务，已有接入令牌会保留。主机全局防火墙在重载时清空规则表的部署，需要重启网关服务恢复专用规则。
 
-QUIC Retry 在握手前验证源地址，接入令牌的证明绑定到当前 TLS 会话。网关对未建立的 UDP 连接限速。已知客户端网络出口时，可以重复指定 `--allow-source CIDR`，只对这些来源开放网关 UDP 端口。启用后如需从 IPv4 和 IPv6 接入，应分别填写允许的网段。 [RFC 9000 地址验证](https://www.rfc-editor.org/rfc/rfc9000.html#section-8)
+QUIC Retry 在握手前验证源地址，接入令牌的证明绑定到当前 TLS 会话。客户端和网关都会校验认证消息的长度及 QUIC 流结束标记，认证超时或消息不完整时关闭连接。网关对未建立的 UDP 连接限速。已知客户端网络出口时，可以重复指定 `--allow-source CIDR`，只对这些来源开放网关 UDP 端口。启用后如需从 IPv4 和 IPv6 接入，应分别填写允许的网段。 [RFC 9000 地址验证](https://www.rfc-editor.org/rfc/rfc9000.html#section-8)
 
 ```sh
 sudo systemctl status cuven-gateway
