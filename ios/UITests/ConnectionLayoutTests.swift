@@ -27,4 +27,23 @@ final class ConnectionLayoutTests: XCTestCase {
         device.orientation = .landscapeLeft
         XCTAssertTrue(title.waitForExistence(timeout: 5))
     }
+
+    @MainActor
+    func testBrowserCanPreviewCustomIPv6WithoutConnecting() {
+        let app = XCUIApplication()
+        app.launch()
+        let browser = app.descendants(matching: .any).matching(identifier: "private-browser").firstMatch
+        if !browser.isHittable { app.swipeUp() }
+        XCTAssertTrue(browser.waitForExistence(timeout: 5))
+        browser.tap()
+        XCTAssertFalse(app.buttons["打开网页"].isEnabled)
+        app.buttons["本地预览"].tap()
+        let ip = app.textFields["模拟 IPv4 或 IPv6"]
+        ip.tap()
+        ip.typeText("2001:db8::27")
+        app.buttons["预览 IP"].tap()
+        XCTAssertTrue(app.webViews.staticTexts["2001:db8::27"].waitForExistence(timeout: 12))
+        app.buttons["关闭"].tap()
+        XCTAssertTrue(app.buttons["预览 IP"].waitForExistence(timeout: 5))
+    }
 }

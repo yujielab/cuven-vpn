@@ -75,6 +75,10 @@ final class VPNController: ObservableObject {
         return profile.usesFullRouting && profile.requiresEncryptedDNS && configuration.hasRequiredRouting(for: profile)
     }
 
+    var browserTunnelIsConnected: Bool {
+        showsConnectedPrivacyPolicy && manager?.connection.status == .connected
+    }
+
     var canStartOnce: Bool {
         offersOneTimeStart && canStart && hasNewCredential && !hasCredential && autoConnect == .off
     }

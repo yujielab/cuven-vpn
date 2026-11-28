@@ -74,6 +74,15 @@ private struct ConnectionView: View {
                     }
                 }
 
+                Section {
+                    NavigationLink {
+                        PrivateBrowserView(vpn: vpn)
+                    } label: {
+                        Label("隐私浏览器", systemImage: "globe")
+                    }
+                    .accessibilityIdentifier("private-browser")
+                }
+
                 if !vpn.shouldReviewBeforeConnecting {
                     Section {
                         Button {
