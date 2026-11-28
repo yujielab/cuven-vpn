@@ -53,6 +53,7 @@ jobs:
           sudo unshare --mount --net --propagation private bash -eu -c '
             mount -t tmpfs tmpfs /etc
             mount -t tmpfs tmpfs /tmp
+            mount -t tmpfs tmpfs /run/lock
             bash "$1/scripts/tests/test-certbot-hook.sh" "$1/core/cuven-gateway"
           ' bash "$GITHUB_WORKSPACE"
 

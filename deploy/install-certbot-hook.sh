@@ -22,13 +22,18 @@ cat > "$temporary" <<'HOOK'
 set -eu
 unit=/etc/systemd/system/cuven-gateway.service
 lineage=${RENEWED_LINEAGE:-}
-[ -n "$lineage" ] && [ -f "$unit" ] || exit 0
+matches_gateway() {
+    [ -n "$lineage" ] && [ -f "$unit" ] &&
+        grep -Fxq -- "LoadCredential=certificate:$lineage/fullchain.pem" "$unit" &&
+        grep -Fxq -- "LoadCredential=private-key:$lineage/privkey.pem" "$unit"
+}
+matches_gateway || exit 0
 lock=/run/lock/cuven-gateway-install.lock
 # An installer retry inherits its existing, locked file description.
 if ! [ /proc/self/fd/9 -ef "$lock" ]; then exec 9>"$lock"; fi
 flock -x 9
-grep -Fxq -- "LoadCredential=certificate:$lineage/fullchain.pem" "$unit" || exit 0
-grep -Fxq -- "LoadCredential=private-key:$lineage/privkey.pem" "$unit" || exit 0
+# The service may have been reconfigured while this renewal was waiting.
+matches_gateway || exit 0
 
 # Earlier installers saved this hook in the Certbot lineage itself.
 legacy='/bin/sh -c "if systemctl is-active --quiet cuven-gateway.service; then systemctl restart cuven-gateway.service; fi"'

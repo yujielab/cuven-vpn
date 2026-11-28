@@ -39,7 +39,11 @@ apply
 apply
 test -x "$hook"
 printf 'LoadCredential=certificate:%s/fullchain.pem\nLoadCredential=private-key:%s/privkey.pem\n' "$lineage" "$lineage" > "$unit"
-RENEWED_LINEAGE=$base/live/other.example "$hook"
+(
+    exec 8>/run/lock/cuven-gateway-install.lock
+    flock -x 8
+    RENEWED_LINEAGE=$base/live/other.example timeout 2 "$hook" 8>&-
+)
 count 0
 head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' > /tmp/original-token
 for damage in missing empty invalid mode; do
