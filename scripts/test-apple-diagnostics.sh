@@ -7,7 +7,7 @@ stage=$(mktemp -d)
 trap 'rm -rf -- "$stage"' EXIT
 mkdir -p "$stage/Sources/Cuven" "$stage/Tests/CuvenTests"
 cp "$repo"/ios/Shared/*.swift "$repo"/ios/App/{DisconnectDiagnostic,TunnelRTTMeasurement,SavedTunnelProfile}.swift "$stage/Sources/Cuven/"
-cp "$repo"/ios/Tests/{SigningKeychainGroupTests,VPNProfileTests,DisconnectDiagnosticTests,TunnelRTTMeasurementTests,GatewayEndpointsTests,GatewayStartupResolverTests,SavedTunnelProfileTests,TunnelSleepIntervalTests}.swift "$stage/Tests/CuvenTests/"
+cp "$repo"/ios/Tests/{SigningKeychainGroupTests,VPNProfileTests,DisconnectDiagnosticTests,TunnelRTTMeasurementTests,GatewayEndpointsTests,GatewayBusyRetryTests,GatewayStartupResolverTests,SavedTunnelProfileTests,TunnelSleepIntervalTests}.swift "$stage/Tests/CuvenTests/"
 cat >"$stage/Package.swift" <<'SWIFT'
 // swift-tools-version: 5.9
 import PackageDescription

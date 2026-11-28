@@ -6,6 +6,7 @@ struct GatewayEndpoints {
     private enum StartupResolution { case current, stale, retried }
     private var startupResolution = StartupResolution.current
     private var startupGatewayFailure: TunnelFailure?
+    private(set) var startupBusyEndpoint: String?
     private(set) var exhaustedStartupFailure: TunnelFailure?
     private var addresses: [String] = []
     private var nextIndex = 0
@@ -34,10 +35,17 @@ struct GatewayEndpoints {
     }
 
     /// A later unreachable address must not hide a response from a reachable gateway.
-    mutating func recordStartupFailure(_ failure: TunnelFailure) -> TunnelFailure {
+    mutating func recordStartupFailure(_ failure: TunnelFailure, at endpoint: String? = nil) -> TunnelFailure {
         switch failure {
-        case .certificateName, .certificateTime, .certificateTrust, .certificatePin, .gatewayRejected, .gatewayBusy, .gatewayIPv6:
+        case .gatewayBusy:
+            if let prior = startupGatewayFailure, prior != .gatewayBusy {
+                return prior
+            }
             startupGatewayFailure = failure
+            startupBusyEndpoint = endpoint
+        case .certificateName, .certificateTime, .certificateTrust, .certificatePin, .gatewayRejected, .gatewayIPv6:
+            startupGatewayFailure = failure
+            startupBusyEndpoint = nil
         case .connection, .gatewayTimeout:
             return startupGatewayFailure ?? failure
         default:
@@ -48,6 +56,7 @@ struct GatewayEndpoints {
 
     mutating func pathChanged(whileResolving: Bool = false) {
         startupGatewayFailure = nil
+        startupBusyEndpoint = nil
         if exhaustedStartupFailure != nil {
             // An address already tried on the old link can work on the new one.
             exhaustedStartupFailure = nil
@@ -70,6 +79,7 @@ struct GatewayEndpoints {
             exhaustedStartupFailure = failure
         } else {
             startupGatewayFailure = nil
+            startupBusyEndpoint = nil
             addresses.removeAll()
             nextIndex = 0
         }
@@ -105,8 +115,19 @@ struct GatewayEndpoints {
         return id
     }
 
-    mutating func finishRefresh(_ id: UUID, with resolved: [String]) {
-        guard lookupPaths.removeValue(forKey: id) == pathID else { return }
-        replace(with: resolved)
+    /// A newly advertised address can wake a reconnect that is already in backoff.
+    @discardableResult
+    mutating func finishRefresh(_ id: UUID, with resolved: [String]) -> Bool {
+        guard lookupPaths.removeValue(forKey: id) == pathID, !resolved.isEmpty else { return false }
+        let answer = Array(resolved.prefix(3))
+        let known = Set(addresses)
+        let added = answer.filter { !known.contains($0) }
+        if added.isEmpty {
+            // Preserve rotation if the resolver only shuffled the same answers.
+            if Set(answer) != known { replace(with: answer) }
+            return false
+        }
+        replace(with: added + answer.filter(known.contains))
+        return true
     }
 }

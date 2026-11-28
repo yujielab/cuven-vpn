@@ -138,18 +138,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let fresh = TunnelEndpoint.resolve(host: profile.host, port: profile.port)
             self.state.async {
                 guard self.session === session else { return }
-                session.endpoints.finishRefresh(lookup, with: session.ready ? [] : fresh)
+                let added = session.endpoints.finishRefresh(lookup, with: session.ready ? [] : fresh)
+                guard added, session.path?.available != false, session.engine == nil,
+                      let pending = session.pendingRetry else { return }
+                pending.cancel()
+                session.pendingRetry = nil
+                self.scheduleReconnect(session, after: 0)
             }
         }
     }
 
-    private func connect(_ session: Session) {
+    private func connect(_ session: Session, to retryEndpoint: String? = nil) {
         let instance: MobileEngine? = MobileNewEngine()
         guard let engine = instance else {
             terminate(session, failure: .connection)
             return
         }
-        guard let endpoint = session.endpoints.next() else {
+        guard let endpoint = retryEndpoint ?? session.endpoints.next() else {
             connectionFailed(session, failure: .resolution)
             return
         }
@@ -159,7 +164,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 guard let self, let session, let engine, self.session === session, session.engine === engine else {
                     return
                 }
-                self.connectionFailed(session)
+                self.connectionFailed(session, endpoint: endpoint)
             }
             session.attemptDeadline = deadline
             state.asyncAfter(deadline: .now() + .seconds(8), execute: deadline)
@@ -193,7 +198,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     if failure == .gatewayTimeout || failure == .connection {
                         self.refreshReconnectEndpoints(session)
                     }
-                    self.connectionFailed(session, failure: failure)
+                    self.connectionFailed(session, failure: failure, endpoint: endpoint)
                     return
                 }
                 // Reuse the address that worked, and alternate addresses if reconnect fails.
@@ -264,6 +269,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func activate(_ session: Session, engine: MobileEngine) {
         session.ready = true
+        session.busyRetry = GatewayBusyRetry()
         session.connectedAt = .now()
         reasserting = false
         schedulePacketRead()
@@ -335,17 +341,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func connectionFailed(_ session: Session, failure: TunnelFailure = .connection) {
+    private func connectionFailed(_ session: Session, failure: TunnelFailure = .connection, endpoint: String? = nil) {
         let engine = session.takeEngine()
         worker.async { engine?.stop() }
         if !session.routesInstalled {
-            let report = session.endpoints.recordStartupFailure(failure)
+            let report = session.endpoints.recordStartupFailure(failure, at: endpoint)
             let profile = session.current.profile
             if !profile.requiresStrictRouting, !VPNProfile.isIP(profile.host),
                session.endpoints.retryStartupResolution(after: failure) {
                 resolve(session)
             } else if session.endpoints.hasUntriedAddress {
                 connect(session)
+            } else if report == .gatewayBusy, let busyEndpoint = session.endpoints.startupBusyEndpoint,
+                      failure == .gatewayBusy || busyEndpoint != endpoint, session.path?.available != false,
+                      let delay = session.busyRetry.delay(for: report, routesInstalled: false) {
+                scheduleRetry(session, after: delay, to: busyEndpoint)
             } else {
                 terminate(session, failure: report)
             }
@@ -357,7 +367,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             session.reconnectAttempts = 0
         }
         session.connectedAt = nil
-        scheduleReconnect(session)
+        guard session.path?.available != false else { return }
+        scheduleReconnect(session, after: session.busyRetry.delay(for: failure, routesInstalled: true))
     }
 
     private func startPathMonitor(_ session: Session) {
@@ -398,7 +409,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             startupResolver.pathChanged(available: available)
             return
         }
-        guard session.routesInstalled else { return }
+        guard session.routesInstalled else {
+            // A delayed busy retry still belongs to the previous physical path.
+            let profile = session.current.profile
+            if let pending = session.pendingRetry, !profile.requiresStrictRouting, !VPNProfile.isIP(profile.host),
+               session.endpoints.retryStartupResolution(after: .connection) {
+                pending.cancel()
+                session.pendingRetry = nil
+                resolve(session)
+            }
+            return
+        }
         session.pendingRetry?.cancel()
         session.pendingRetry = nil
         if session.engine != nil {
@@ -408,18 +429,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func scheduleReconnect(_ session: Session) {
+    private func scheduleReconnect(_ session: Session, after delay: Int? = nil) {
         guard session.path?.available != false, session.pendingRetry == nil else { return }
         guard session.retainsRoutesOnFailure || session.reconnectAttempts < 3 else {
             terminate(session, failure: .disconnected)
             return
         }
-        let delay = min(1 << session.reconnectAttempts, 30)
+        scheduleRetry(session, after: delay ?? min(1 << session.reconnectAttempts, 30))
+    }
+
+    private func scheduleRetry(_ session: Session, after delay: Int, to endpoint: String? = nil) {
         let retry = DispatchWorkItem { [weak self, weak session] in
             guard let self, let session, self.session === session else { return }
             session.pendingRetry = nil
-            session.reconnectAttempts = min(session.reconnectAttempts + 1, 5)
-            self.connect(session)
+            if session.path?.available == false {
+                if !session.routesInstalled { self.terminate(session, failure: .connection) }
+                return
+            }
+            if session.routesInstalled {
+                session.reconnectAttempts = min(session.reconnectAttempts + 1, 5)
+            }
+            self.connect(session, to: endpoint)
         }
         session.pendingRetry = retry
         state.asyncAfter(deadline: .now() + .seconds(delay), execute: retry)
@@ -472,6 +502,7 @@ private final class Session {
     var sleepInterval = TunnelSleepInterval()
     var connectedAt: DispatchTime?
     var reconnectAttempts = 0
+    var busyRetry = GatewayBusyRetry()
     var monitor: NWPathMonitor?
     var path: PhysicalPath?
     var pendingRetry: DispatchWorkItem?

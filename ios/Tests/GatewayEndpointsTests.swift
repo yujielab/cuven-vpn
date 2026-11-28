@@ -159,4 +159,43 @@ final class GatewayEndpointsTests: XCTestCase {
         endpoints.finishRefresh(current, with: ["current"])
         XCTAssertEqual(endpoints.next(), "current")
     }
+
+    func testNewAnswerIsTriedFirstEvenWhenDNSListsItLast() throws {
+        var endpoints = GatewayEndpoints()
+        endpoints.replace(with: ["old", "backup"])
+        let lookup = try XCTUnwrap(endpoints.beginRefresh())
+        XCTAssertTrue(endpoints.finishRefresh(lookup, with: ["old", "new"]))
+        XCTAssertEqual(endpoints.next(), "new")
+        XCTAssertEqual(endpoints.next(), "old")
+        XCTAssertFalse(endpoints.finishRefresh(lookup, with: ["stale"]))
+    }
+
+    func testReorderedOrReducedAnswersDoNotWakeBackoff() throws {
+        var endpoints = GatewayEndpoints()
+        endpoints.replace(with: ["a", "b", "c"])
+        XCTAssertEqual(endpoints.next(), "a")
+        let now = DispatchTime.now()
+        let reordered = try XCTUnwrap(endpoints.beginRefresh(now: now))
+        XCTAssertFalse(endpoints.finishRefresh(reordered, with: ["b", "c", "a"]))
+        XCTAssertEqual(endpoints.next(), "b")
+        let reduced = try XCTUnwrap(endpoints.beginRefresh(now: now + .seconds(60)))
+        XCTAssertFalse(endpoints.finishRefresh(reduced, with: ["c"]))
+        XCTAssertEqual(endpoints.next(), "c")
+    }
+
+    func testBusyAddressSurvivesUnreachableFallbackButNeverOverridesSecurityFailure() {
+        for failure in [TunnelFailure.gatewayRejected, .certificateTrust, .certificatePin] {
+            var endpoints = GatewayEndpoints()
+            XCTAssertEqual(endpoints.recordStartupFailure(.gatewayBusy, at: "busy"), .gatewayBusy)
+            XCTAssertEqual(endpoints.recordStartupFailure(.gatewayTimeout, at: "offline"), .gatewayBusy)
+            XCTAssertEqual(endpoints.startupBusyEndpoint, "busy")
+            XCTAssertEqual(endpoints.recordStartupFailure(failure, at: "denied"), failure)
+            XCTAssertEqual(endpoints.recordStartupFailure(.gatewayBusy, at: "busy"), failure)
+            XCTAssertNil(endpoints.startupBusyEndpoint)
+            endpoints.pathChanged()
+            XCTAssertEqual(endpoints.recordStartupFailure(.gatewayBusy, at: "other"), .gatewayBusy)
+            endpoints.pathChanged()
+            XCTAssertNil(endpoints.startupBusyEndpoint)
+        }
+    }
 }
