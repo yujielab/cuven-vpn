@@ -33,6 +33,7 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 	token := Token{1, 2, 3}
 	peers := make(chan *Session, 1)
 	serverErrors := make(chan error, 2)
+	var verified atomic.Int32
 	go func() {
 		for attempt := range 3 {
 			connection, err := listener.Accept(ctx)
@@ -40,11 +41,10 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 				serverErrors <- err
 				return
 			}
-			if attempt == 2 {
-				serverErrors <- connection.CloseWithError(closeRejected, "gateway busy")
-				return
-			}
-			peer, err := Authenticate(ctx, connection, token, true)
+			peer, err := AuthenticateWithAdmission(ctx, connection, token, true, func() bool {
+				verified.Add(1)
+				return attempt != 2
+			})
 			if err != nil {
 				serverErrors <- err
 			} else {
@@ -91,8 +91,11 @@ func TestAuthenticatedIPRoundTrip(t *testing.T) {
 	if other, err := Dial(ctx, address, token, conf); other != nil || !errors.Is(err, ErrGatewayBusy) {
 		t.Fatalf("occupied gateway: peer %v, error %v", other, err)
 	}
-	if err := <-serverErrors; err != nil {
-		t.Fatal(err)
+	if err := <-serverErrors; !errors.Is(err, ErrGatewayBusy) {
+		t.Fatalf("server admission decision: %v", err)
+	}
+	if verified.Load() != 2 {
+		t.Fatalf("admission ran %d times for two valid proofs and one invalid proof", verified.Load())
 	}
 	if client.PacketMTU() != 1500 || server.PacketMTU() != 1500 {
 		t.Fatalf("current client and gateway negotiated MTUs %d and %d", client.PacketMTU(), server.PacketMTU())

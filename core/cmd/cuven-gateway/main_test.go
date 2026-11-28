@@ -33,3 +33,23 @@ func TestNotifyReady(t *testing.T) {
 		t.Fatalf("unexpected readiness notification %q", got)
 	}
 }
+
+func TestPendingHandshakesDoNotOwnTheSession(t *testing.T) {
+	admission := sessionAdmission{pending: make(chan struct{}, 2)}
+	if !admission.beginHandshake() || !admission.beginHandshake() || admission.beginHandshake() {
+		t.Fatal("pending handshakes exceeded or underused their budget")
+	}
+	// The second handshake completes first; it can claim the session while the first is pending.
+	if !admission.claimSession() {
+		t.Fatal("pending handshake prevented a verified peer from connecting")
+	}
+	<-admission.pending
+	if admission.claimSession() || admission.beginHandshake() {
+		t.Fatal("another handshake could displace the active session")
+	}
+	<-admission.pending
+	admission.occupied.Store(false)
+	if !admission.beginHandshake() || !admission.claimSession() {
+		t.Fatal("could not reconnect after the prior session ended")
+	}
+}

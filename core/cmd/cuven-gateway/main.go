@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -192,13 +193,43 @@ func openTUN(ctx context.Context, dual bool) (*os.File, error) {
 	return device, nil
 }
 
+// Handshakes have a separate budget from the single forwarding session.
+type sessionAdmission struct {
+	pending  chan struct{}
+	occupied atomic.Bool
+}
+
+func (a *sessionAdmission) beginHandshake() bool {
+	if a.occupied.Load() {
+		return false
+	}
+	select {
+	case a.pending <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *sessionAdmission) claimSession() bool {
+	return a.occupied.CompareAndSwap(false, true)
+}
+
 func serve(ctx context.Context, listener *iptunnel.Listener, device *os.File, token iptunnel.Token, dual bool, model *linkhealth.Model) error {
+	ctx, cancel := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		_ = listener.Close()
+		_ = device.Close()
+		workers.Wait()
+	}()
 	var active atomic.Pointer[iptunnel.Session]
 	peer4 := netip.MustParseAddr("10.66.0.2")
 	peer6 := netip.MustParseAddr("fd66::2")
 	isPeer := func(address netip.Addr) bool { return address == peer4 || (dual && address == peer6) }
 	pumpErr := make(chan error, 1)
-	go func() {
+	workers.Go(func() {
 		var buffer [iptunnel.MTU + 1]byte
 		for {
 			n, err := device.Read(buffer[:])
@@ -212,16 +243,11 @@ func serve(ctx context.Context, listener *iptunnel.Listener, device *os.File, to
 				_ = peer.WritePacket(buffer[:n])
 			}
 		}
-	}()
-	defer func() {
-		if peer := active.Swap(nil); peer != nil {
-			_ = peer.Close()
-		}
-		_ = device.Close()
-	}()
-	// While a session owns the slot, only its goroutine can change the TUN MTU.
+	})
+	// Only the authenticated owner may change the TUN MTU or forward packets.
 	interfaceMTU := iptunnel.LegacyMTU
-	slot := make(chan struct{}, 1)
+	const maxPendingAuth = 8
+	admission := sessionAdmission{pending: make(chan struct{}, maxPendingAuth)}
 	for {
 		connection, err := listener.Accept(ctx)
 		if err != nil {
@@ -235,15 +261,20 @@ func serve(ctx context.Context, listener *iptunnel.Listener, device *os.File, to
 				return err
 			}
 		}
-		select {
-		case slot <- struct{}{}:
-		default:
+		if !admission.beginHandshake() {
 			_ = connection.CloseWithError(1, "gateway busy")
 			continue
 		}
-		go func() {
-			defer func() { <-slot }()
-			peer, err := iptunnel.Authenticate(ctx, connection, token, dual)
+		workers.Go(func() {
+			reserved := false
+			peer, err := iptunnel.AuthenticateWithAdmission(ctx, connection, token, dual, func() bool {
+				reserved = admission.claimSession()
+				return reserved
+			})
+			<-admission.pending
+			if reserved {
+				defer admission.occupied.Store(false)
+			}
 			if err != nil {
 				return
 			}
@@ -272,7 +303,7 @@ func serve(ctx context.Context, listener *iptunnel.Listener, device *os.File, to
 					}
 				}
 			}
-		}()
+		})
 	}
 }
 

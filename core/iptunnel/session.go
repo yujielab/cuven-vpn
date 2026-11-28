@@ -168,8 +168,19 @@ func Listen(address string, tlsConfig *tls.Config) (*Listener, error) {
 // Authenticate accepts a single token proof on an established QUIC connection.
 // The proof is bound to the TLS session by exporter keying material.
 func Authenticate(ctx context.Context, connection *quic.Conn, token Token, dual bool) (*Session, error) {
-	if err := authenticateServer(ctx, connection, token, dual); err != nil {
-		_ = connection.CloseWithError(closeRejected, "authentication failed")
+	return AuthenticateWithAdmission(ctx, connection, token, dual, nil)
+}
+
+// AuthenticateWithAdmission calls admit synchronously after verifying the token
+// and before acknowledging the client. The caller owns any acquired reservation,
+// including when writing the acknowledgement subsequently fails.
+func AuthenticateWithAdmission(ctx context.Context, connection *quic.Conn, token Token, dual bool, admit func() bool) (*Session, error) {
+	if err := authenticateServer(ctx, connection, token, dual, admit); err != nil {
+		reason := "authentication failed"
+		if errors.Is(err, ErrGatewayBusy) {
+			reason = "gateway busy"
+		}
+		_ = connection.CloseWithError(closeRejected, reason)
 		return nil, err
 	}
 	return newSession(connection, dual), nil
@@ -223,7 +234,7 @@ func authenticateClient(ctx context.Context, connection *quic.Conn, token Token)
 	return reply[0]&authIPv6 != 0, nil
 }
 
-func authenticateServer(ctx context.Context, connection *quic.Conn, token Token, dual bool) error {
+func authenticateServer(ctx context.Context, connection *quic.Conn, token Token, dual bool, admit func() bool) error {
 	ctx, cancel := context.WithTimeout(ctx, authTimeout)
 	defer cancel()
 	expected, err := tokenProof(connection, token)
@@ -245,6 +256,9 @@ func authenticateServer(ctx context.Context, connection *quic.Conn, token Token,
 		return ErrAuthentication
 	}
 	stream.CancelRead(0)
+	if admit != nil && !admit() {
+		return ErrGatewayBusy
+	}
 	response := byte(authAccepted)
 	if dual {
 		response |= authIPv6
