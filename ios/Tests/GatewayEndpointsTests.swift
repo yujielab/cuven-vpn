@@ -56,6 +56,55 @@ final class GatewayEndpointsTests: XCTestCase {
         XCTAssertEqual(endpoints.recordStartupFailure(.connection), .connection)
     }
 
+    func testExhaustedSamePathAttemptsOnlyNewAnswersAndRetainsWarmRotation() {
+        var endpoints = GatewayEndpoints()
+        endpoints.replace(with: ["old", "backup"])
+        XCTAssertEqual(endpoints.next(), "old")
+        XCTAssertFalse(endpoints.retryStartupResolution(after: .connection))
+        XCTAssertEqual(endpoints.next(), "backup")
+        XCTAssertTrue(endpoints.retryStartupResolution(after: .connection))
+        XCTAssertEqual(endpoints.exhaustedStartupFailure, .connection)
+        XCTAssertNil(endpoints.installStartupAnswers(["backup", "new", "old"]))
+        XCTAssertEqual(endpoints.next(), "new")
+        XCTAssertFalse(endpoints.hasUntriedAddress)
+        XCTAssertFalse(endpoints.retryStartupResolution(after: .connection))
+        XCTAssertEqual(endpoints.next(), "backup")
+    }
+
+    func testRepeatedOrReorderedStartupAnswerReturnsOriginalTimeout() {
+        for answer in [["first", "second"], ["second", "first"], ["second"]] {
+            var endpoints = GatewayEndpoints()
+            endpoints.replace(with: ["first", "second"])
+            _ = endpoints.next()
+            _ = endpoints.next()
+            XCTAssertTrue(endpoints.retryStartupResolution(after: .gatewayTimeout))
+            XCTAssertEqual(endpoints.installStartupAnswers(answer), .gatewayTimeout)
+            XCTAssertFalse(endpoints.hasUntriedAddress)
+        }
+    }
+
+    func testPathSwitchDuringFinalLookupCanRetryPreviouslyUnreachableAddress() {
+        var endpoints = GatewayEndpoints()
+        endpoints.replace(with: ["ip"])
+        _ = endpoints.next()
+        XCTAssertTrue(endpoints.retryStartupResolution(after: .connection))
+        endpoints.pathChanged(whileResolving: true)
+        XCTAssertNil(endpoints.exhaustedStartupFailure)
+        XCTAssertNil(endpoints.installStartupAnswers(["ip"]))
+        XCTAssertEqual(endpoints.next(), "ip")
+        XCTAssertFalse(endpoints.retryStartupResolution(after: .connection))
+    }
+
+    func testReachableGatewayErrorAvoidsAnExtraSamePathLookup() {
+        var endpoints = GatewayEndpoints()
+        endpoints.replace(with: ["reachable", "unreachable"])
+        _ = endpoints.next()
+        _ = endpoints.recordStartupFailure(.gatewayRejected)
+        _ = endpoints.next()
+        XCTAssertFalse(endpoints.retryStartupResolution(after: .connection))
+        XCTAssertEqual(endpoints.recordStartupFailure(.connection), .gatewayRejected)
+    }
+
     func testLookupFailureAndRepeatedDNSAnswerKeepWorkingRotation() throws {
         var endpoints = GatewayEndpoints()
         XCTAssertNil(endpoints.next())

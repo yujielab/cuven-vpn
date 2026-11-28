@@ -119,10 +119,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let self, let session, self.session === session else { return }
             switch result {
             case .success(let resolved):
-                session.endpoints.replace(with: resolved)
-                self.connect(session)
+                if let failure = session.endpoints.installStartupAnswers(resolved) {
+                    self.terminate(session, failure: failure)
+                } else {
+                    self.connect(session)
+                }
             case .failure(let reason):
-                self.terminate(session, failure: reason)
+                self.terminate(session, failure: session.endpoints.exhaustedStartupFailure ?? reason)
             }
         }
     }
@@ -334,7 +337,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         worker.async { engine?.stop() }
         if !session.routesInstalled {
             let report = session.endpoints.recordStartupFailure(failure)
-            if session.endpoints.retryStartupResolution(after: failure) {
+            let profile = session.current.profile
+            if !profile.highSecurity, !VPNProfile.isIP(profile.host),
+               session.endpoints.retryStartupResolution(after: failure) {
                 resolve(session)
             } else if session.endpoints.hasUntriedAddress {
                 connect(session)
@@ -385,11 +390,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
 
+        session.endpoints.pathChanged(whileResolving: startupResolver.isPending)
         if startupResolver.isPending {
             startupResolver.pathChanged(available: available)
             return
         }
-        session.endpoints.pathChanged()
         guard session.routesInstalled else { return }
         session.pendingRetry?.cancel()
         session.pendingRetry = nil
